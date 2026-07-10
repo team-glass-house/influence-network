@@ -1,0 +1,80 @@
+Form
+==========
+990
+----------
+2012: Accessed the 990 Form PDF for 2012 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/f990--2012.pdf.
+2013: Accessed the 990 Form PDF for 2013 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/f990--2013.pdf.
+2014: Accessed the 990 Form PDF for 2014 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/f990--2014.pdf.
+2015: Accessed the 990 Form PDF for 2015 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/f990--2015.pdf.
+2016: Accessed the 990 Form PDF for 2016 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/f990--2016.pdf.
+2017: Accessed the 990 Form PDF for 2017 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/f990--2017.pdf.
+2018: Accessed the 990 Form PDF for 2018 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/f990--2018.pdf.
+2019: Accessed the 990 Form PDF for 2019 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/f990--2019.pdf.
+2020: Accessed the 990 Form PDF for 2020 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/f990--2020.pdf.
+2021: Accessed the 990 Form PDF for 2021 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/f990--2021.pdf.
+2022: Accessed the 990 Form PDF for 2022 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/f990--2022.pdf.
+2023: Accessed the 990 Form PDF for 2023 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/f990--2023.pdf.
+2024: Accessed the 990 Form PDF for 2024 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/f990--2024.pdf.
+2025: Accessed the 990 Form PDF for 2025 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/f990--2025.pdf.
+These files were stored in 'materials/990 PDFs/990 Form'
+
+
+990EZ
+----------
+2012: Accessed the 990EZ Form PDF for 2012 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/f990ez--2012.pdf.
+2013: Accessed the 990EZ Form PDF for 2013 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/f990ez--2013.pdf.
+2014: Accessed the 990EZ Form PDF for 2014 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/f990ez--2014.pdf.
+2015: Accessed the 990EZ Form PDF for 2015 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/f990ez--2015.pdf.
+2016: Accessed the 990EZ Form PDF for 2016 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/f990ez--2016.pdf.
+2017: Accessed the 990EZ Form PDF for 2017 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/f990ez--2017.pdf.
+2018: Accessed the 990EZ Form PDF for 2018 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/f990ez--2018.pdf.
+2019: Accessed the 990EZ Form PDF for 2019 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/f990ez--2019.pdf.
+2020: Accessed the 990EZ Form PDF for 2020 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/f990ez--2020.pdf.
+2021: Accessed the 990EZ Form PDF for 2021 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/f990ez--2021.pdf.
+2022: Accessed the 990EZ Form PDF for 2022 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/f990ez--2022.pdf.
+2023: Accessed the 990EZ Form PDF for 2023 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/f990ez--2023.pdf.
+2024: Accessed the 990EZ Form PDF for 2024 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/f990ez--2024.pdf.
+2025: Accessed the 990EZ Form PDF for 2025 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/f990ez--2025.pdf.
+These files were stored in 'materials/990 PDFs/990EZ Form'
+
+
+Instructions
+==========
+990
+----------
+2012: Accessed the 990 Instructions PDF for 2012 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/i990--2012.pdf.
+2013: Accessed the 990 Instructions PDF for 2013 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/i990--2013.pdf.
+2014: Accessed the 990 Instructions PDF for 2014 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/i990--2014.pdf.
+2015: Accessed the 990 Instructions PDF for 2015 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/i990--2015.pdf.
+2016: Accessed the 990 Instructions PDF for 2016 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/i990--2016.pdf.
+2017: Accessed the 990 Instructions PDF for 2017 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/i990--2017.pdf.
+2018: Accessed the 990 Instructions PDF for 2018 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/i990--2018.pdf.
+2019: Accessed the 990 Instructions PDF for 2019 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/i990--2019.pdf.
+2020: Accessed the 990 Instructions PDF for 2020 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/i990--2020.pdf.
+2021: Accessed the 990 Instructions PDF for 2021 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/i990--2021.pdf.
+2022: Accessed the 990 Instructions PDF for 2022 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/i990--2022.pdf.
+2023: Accessed the 990 Instructions PDF for 2023 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/i990--2023.pdf.
+2024: Accessed the 990 Instructions PDF for 2024 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/i990--2024.pdf.
+2025: Accessed the 990 Instructions PDF for 2025 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/i990--2025.pdf.
+These files were stored in 'materials/990 PDFs/990 Instructions'
+
+
+990EZ
+----------
+2012: Accessed the 990EZ Instructions PDF for 2012 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/i990ez--2012.pdf.
+2013: Accessed the 990EZ Instructions PDF for 2013 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/i990ez--2013.pdf.
+2014: Accessed the 990EZ Instructions PDF for 2014 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/i990ez--2014.pdf.
+2015: Accessed the 990EZ Instructions PDF for 2015 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/i990ez--2015.pdf.
+2016: Accessed the 990EZ Instructions PDF for 2016 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/i990ez--2016.pdf.
+2017: Accessed the 990EZ Instructions PDF for 2017 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/i990ez--2017.pdf.
+2018: Accessed the 990EZ Instructions PDF for 2018 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/i990ez--2018.pdf.
+2019: Accessed the 990EZ Instructions PDF for 2019 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/i990ez--2019.pdf.
+2020: Accessed the 990EZ Instructions PDF for 2020 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/i990ez--2020.pdf.
+2021: Accessed the 990EZ Instructions PDF for 2021 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/i990ez--2021.pdf.
+2022: Accessed the 990EZ Instructions PDF for 2022 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/i990ez--2022.pdf.
+2023: Accessed the 990EZ Instructions PDF for 2023 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/i990ez--2023.pdf.
+2024: Accessed the 990EZ Instructions PDF for 2024 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/i990ez--2024.pdf.
+2025: Accessed the 990EZ Instructions PDF for 2025 on 2026-07-10 at https://www.irs.gov/pub/irs-prior/i990ez--2025.pdf.
+These files were stored in 'materials/990 PDFs/990EZ Instructions'
+
+
