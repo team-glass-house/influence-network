@@ -11,6 +11,7 @@
   </ReturnHeader>
   <ReturnData>
     <IRS990>
+      <Organization501cInd organization501cTypeTxt="4">X</Organization501cInd>
       <CYTotalRevenueAmt>1500000</CYTotalRevenueAmt>
       <CYTotalExpensesAmt>1200000</CYTotalExpensesAmt>
       <MissionDesc>Promote civic engagement and policy advocacy.</MissionDesc>

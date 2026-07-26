@@ -33,7 +33,7 @@ class Settings:
         data_dir = Path(os.getenv("DATA_DIR", "data"))
         if not data_dir.is_absolute():
             data_dir = _PROJECT_ROOT / data_dir
-        db_path = Path(os.getenv("DB_PATH", str(data_dir / "influence.db")))
+        db_path = Path(os.getenv("DB_PATH", str(data_dir / "irs990_full.db")))
         if not db_path.is_absolute():
             db_path = _PROJECT_ROOT / db_path
 

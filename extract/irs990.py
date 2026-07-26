@@ -18,6 +18,7 @@ Usage:
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 from pathlib import Path
 from typing import Any, Iterable
@@ -25,8 +26,11 @@ from typing import Any, Iterable
 from lxml import etree
 
 from .db import connect, init_db, insert_many, upsert
+from .entities import normalize_organization_name
 
 logger = logging.getLogger(__name__)
+
+PARSER_VERSION = "irs990-v5"  # v5: total_assets for 990/990EZ; transparency index fields
 
 
 def _child(node: etree._Element | None, tag: str) -> etree._Element | None:
@@ -49,6 +53,15 @@ def _text(node: etree._Element | None, *tags: str) -> str | None:
     return cur.text.strip()
 
 
+def _attribute(node: etree._Element | None, tag: str, attribute: str) -> str | None:
+    """Return a stripped attribute from a local-name child element."""
+    child = _child(node, tag)
+    if child is None:
+        return None
+    value = child.get(attribute)
+    return value.strip() if value else None
+
+
 def _float(value: str | None) -> float | None:
     if value is None:
         return None
@@ -69,13 +82,8 @@ def _findall(node: etree._Element, tag: str) -> list[etree._Element]:
     return node.xpath(f"./*[local-name()='{tag}']")
 
 
-def parse_990_file(path: str | Path) -> dict[str, Any]:
-    """Parse one 990 XML return into a structured dict.
-
-    Returns a dict with keys: org, grants, people. Designed to tolerate
-    missing sections (not every return files Schedule I).
-    """
-    tree = etree.parse(str(path))
+def _parse_tree(tree: "etree._ElementTree") -> dict[str, Any]:
+    """Parse an already-loaded lxml ElementTree into a structured dict."""
     root = tree.getroot()
 
     return_header = _child(root, "ReturnHeader")
@@ -94,12 +102,37 @@ def parse_990_file(path: str | Path) -> dict[str, Any]:
                 or _text(filer, "BusinessName", "BusinessNameLine1")
             )
 
+    form = None
+    form_pf = None
+    form_type = None
+    if return_data is not None:
+        form = _child(return_data, "IRS990")
+        if form is None:
+            form = _child(return_data, "IRS990EZ")
+        form_pf = _child(return_data, "IRS990PF")
+        filing = next(
+            (child for child in return_data if etree.QName(child).localname.startswith("IRS990")),
+            None,
+        )
+        if filing is not None:
+            form_type = etree.QName(filing).localname.removeprefix("IRS")
+
     org: dict[str, Any] = {
         "ein": ein,
         "name": name,
         "tax_year": int(tax_year) if tax_year and tax_year.isdigit() else None,
+        "form_type": form_type,
+        "exempt_organization_type": None,
         "total_revenue": None,
         "total_expenses": None,
+        "total_assets": None,
+        "voting_members_governing_body": None,
+        "voting_members_independent": None,
+        "total_volunteers": None,
+        "website": None,
+        "total_salaries": None,
+        "unrestricted_net_assets_eoy": None,
+        "fundraising_expenses": None,
         "political_activity_flag": None,
         "mission": None,
         "raw_json": None,
@@ -108,30 +141,72 @@ def parse_990_file(path: str | Path) -> dict[str, Any]:
     people: list[dict[str, Any]] = []
     contractors: list[dict[str, Any]] = []
 
-    if return_data is not None:
-        form = _child(return_data, "IRS990") or _child(return_data, "IRS990EZ")
-        if form is not None:
-            org["total_revenue"] = _float(
-                _text(form, "CYTotalRevenueAmt") or _text(form, "TotalRevenueCurrentYear")
-            )
-            org["total_expenses"] = _float(
-                _text(form, "CYTotalExpensesAmt") or _text(form, "TotalExpensesCurrentYear")
-            )
-            org["mission"] = (
-                _text(form, "MissionDesc")
-                or _text(form, "ActivityOrMissionDesc")
-                or _text(form, "MissionStatement")
-            )
-            people.extend(_parse_officers(form, org["ein"], org["tax_year"]))
-            contractors.extend(_parse_contractors(form, org["ein"], org["tax_year"]))
-
+    lobbying = None
+    _527_orgs = None
+    related_orgs = None
+    related_org_transactions = None
+    if form is not None:
+        if _child(form, "Organization501c3Ind") is not None:
+            org["exempt_organization_type"] = "501(c)(3)"
+        else:
+            section = _attribute(form, "Organization501cInd", "organization501cTypeTxt")
+            org["exempt_organization_type"] = f"501(c)({section})" if section else None
+        org["total_revenue"] = _float(
+            _text(form, "CYTotalRevenueAmt")
+            or _text(form, "TotalRevenueCurrentYear")
+            or _text(form, "TotalRevenueAmt")
+        )
+        org["total_expenses"] = _float(
+            _text(form, "CYTotalExpensesAmt")
+            or _text(form, "TotalExpensesCurrentYear")
+            or _text(form, "TotalExpensesAmt")
+        )
+        # Total assets (end of year).
+        # 990: TotalAssetsEOYAmt  |  990EZ: Form990TotalAssetsGrp/EOYAmt
+        org["total_assets"] = _float(
+            _text(form, "TotalAssetsEOYAmt")
+            or _text(form, "TotalAssetsCurrentYear")
+            or _text(_child(form, "Form990TotalAssetsGrp"), "EOYAmt")
+        )
+        # Governance / transparency fields.
+        org["voting_members_governing_body"] = _float(
+            _text(form, "VotingMembersGoverningBodyCnt")
+        )
+        org["voting_members_independent"] = _float(
+            _text(form, "VotingMembersIndependentCnt")
+        )
+        org["total_volunteers"] = _float(_text(form, "TotalVolunteersCnt"))
+        org["website"] = _text(form, "WebsiteAddressTxt")
+        org["total_salaries"] = _float(
+            _text(form, "CYSalariesCompEmpBnftPaidAmt")
+            or _text(form, "SalariesAndWagesAmt")
+        )
+        # Unrestricted net assets EOY.
+        # Pre-2022 schema: UnrestrictedNetAssetsGrp/EOYAmt
+        # Post-2022 schema: NoDonorRestrictionNetAssetsGrp/EOYAmt
+        # Flat fallback: NetAssetsOrFundBalancesEOYAmt (990EZ and some 990s)
+        org["unrestricted_net_assets_eoy"] = _float(
+            _text(_child(form, "NoDonorRestrictionNetAssetsGrp"), "EOYAmt")
+            or _text(_child(form, "UnrestrictedNetAssetsGrp"), "EOYAmt")
+            or _text(form, "NetAssetsOrFundBalancesEOYAmt")
+        )
+        org["fundraising_expenses"] = _float(
+            _text(form, "CYTotalProfFndrsngExpnsAmt")
+            or _text(form, "TotalFundraisingExpenseAmt")
+        )
+        org["mission"] = (
+            _text(form, "MissionDesc")
+            or _text(form, "ActivityOrMissionDesc")
+            or _text(form, "MissionStatement")
+            or _text(form, "PrimaryExemptPurposeTxt")
+        )
+        people.extend(_parse_officers(form, org["ein"], org["tax_year"]))
+        contractors.extend(_parse_contractors(form, org["ein"], org["tax_year"]))
         grants.extend(_parse_grants(return_data, org["ein"], org["tax_year"]))
         lobbying = _parse_schedule_c(return_data, org["ein"], org["tax_year"])
-        try:
-            related_orgs, related_org_transactions = _parse_schedule_r(return_data, org["ein"],
-                                                                       org["tax_year"])
-        except TypeError:
-            related_orgs = related_org_transactions = None
+        schedule_r = _parse_schedule_r(return_data, org["ein"], org["tax_year"])
+        if schedule_r is not None:
+            related_orgs, related_org_transactions = schedule_r
 
         # Political activity signal: an explicit Part IV flag on the core
         # form, OR the presence of reported lobbying expenditures on
@@ -148,14 +223,20 @@ def parse_990_file(path: str | Path) -> dict[str, Any]:
         else:
             _527_orgs = None
         org["political_activity_flag"] = 1 if (pol_flag or lobbying_spend > 0) else 0
-    else:
-        lobbying = None
-        _527_orgs = None
-        related_orgs = None
-        related_org_transactions = None
+
+    elif form_pf is not None:
+        # 990PF (private foundations) uses a different element structure.
+        _populate_990pf_org(org, form_pf)
+        people.extend(_parse_990pf_officers(form_pf, org["ein"], org["tax_year"]))
+        grants.extend(_parse_990pf_grants(form_pf, org["ein"], org["tax_year"]))
 
     filer_data = {
         "org": org,
+        "filing": {
+            **org,
+            "tax_period_end_date": _text(return_header, "TaxPeriodEndDt"),
+            "return_timestamp": _text(return_header, "ReturnTs"),
+        },
         "grants": grants,
         "people": people,
         "lobbying": lobbying,
@@ -166,6 +247,16 @@ def parse_990_file(path: str | Path) -> dict[str, Any]:
     }
 
     return filer_data
+
+
+def parse_990_file(path: str | Path) -> dict[str, Any]:
+    """Parse one 990 XML return into a structured dict.
+
+    Returns a dict with keys: filing, grants, people, etc. Designed to
+    tolerate missing sections (not every return files Schedule I).
+    """
+    tree = etree.parse(str(path))
+    return _parse_tree(tree)
 
 
 def _parse_officers(form: etree._Element, ein: str | None,
@@ -261,25 +352,161 @@ def _parse_grants(return_data: etree._Element, ein: str | None,
     return rows
 
 
+def _populate_990pf_org(org: dict[str, Any], form_pf: etree._Element) -> None:
+    """Fill in org fields from an IRS990PF element (private foundation returns).
+
+    990PF uses AnalysisOfRevenueAndExpenses instead of the top-level revenue
+    fields present on 990/990EZ, and uses different exempt-status indicators.
+    """
+    # Exempt org type: 501(c)(3) private foundations signal with a separate indicator.
+    if _text(form_pf, "Organization501c3ExemptPFInd"):
+        org["exempt_organization_type"] = "501(c)(3)"
+    elif _text(form_pf, "Organization4947a1NotPFInd"):
+        org["exempt_organization_type"] = "4947(a)(1)"
+
+    # Revenue and expenses live inside AnalysisOfRevenueAndExpenses.
+    rev_grp = _child(form_pf, "AnalysisOfRevenueAndExpenses")
+    org["total_revenue"] = _float(
+        _text(rev_grp, "TotalRevAndExpnssAmt")
+        or _text(form_pf, "TotalRevAndExpnssAmt")
+    )
+    org["total_expenses"] = _float(
+        _text(rev_grp, "TotalExpensesRevAndExpnssAmt")
+        or _text(form_pf, "TotalExpensesRevAndExpnssAmt")
+    )
+
+    # Total assets from balance sheet (end of year fair market value).
+    org["total_assets"] = _float(
+        _text(form_pf, "FMVAssetsEOYAmt")
+        or _text(form_pf, "Form990PFBalanceSheetsGrp", "TotalAssetsEOYAmt")
+    )
+
+    # Mission / purpose description.
+    org["mission"] = _text(form_pf, "PrimaryExemptPurposeTxt")
+
+    # Website (990PF Part VII-B).
+    org["website"] = _text(form_pf, "WebsiteAddressTxt")
+
+    # Officer compensation total from AnalysisOfRevenueAndExpenses.
+    org["total_salaries"] = _float(
+        _text(form_pf, "CompOfcrDirTrstRevAndExpnssAmt")
+        or _text(_child(form_pf, "AnalysisOfRevenueAndExpenses"), "CompOfcrDirTrstRevAndExpnssAmt")
+    )
+
+    # Net assets EOY from balance sheet (unrestricted equivalent for PF).
+    org["unrestricted_net_assets_eoy"] = _float(
+        _text(form_pf, "Form990PFBalanceSheetsGrp", "TotNetAstOrFundBalancesEOYAmt")
+        or _text(form_pf, "TotNetAstOrFundBalancesEOYAmt")
+    )
+
+    # Political activity: Part VII-A legislative/political activity flag.
+    pol = _text(form_pf, "StatementsRegardingActyGrp", "LegislativePoliticalActyInd")
+    org["political_activity_flag"] = 1 if (pol and pol.lower() in {"1", "true", "x"}) else 0
+
+
+def _parse_990pf_officers(form_pf: etree._Element, ein: str | None,
+                          tax_year: int | None) -> list[dict[str, Any]]:
+    """Parse officers/directors/trustees from a 990PF return.
+
+    990PF lists them under OfficerDirTrstKeyEmplInfoGrp/OfficerDirTrstKeyEmplGrp
+    using PersonNm, TitleTxt, and CompensationAmt -- compatible with the
+    irs990_filing_people schema.
+    """
+    rows: list[dict[str, Any]] = []
+    info_grp = _child(form_pf, "OfficerDirTrstKeyEmplInfoGrp")
+    if info_grp is None:
+        return rows
+    for grp in _findall(info_grp, "OfficerDirTrstKeyEmplGrp"):
+        person = _text(grp, "PersonNm") or _text(grp, "PersonName")
+        if not person:
+            continue
+        rows.append({
+            "ein": ein,
+            "tax_year": tax_year,
+            "person_name": person,
+            "title": _text(grp, "TitleTxt") or _text(grp, "Title"),
+            "is_indiv_trustee_or_director": None,
+            "is_institutional_trustee": None,
+            "is_officer": None,
+            "is_key_employee": None,
+            "is_highest_compensated_employee": None,
+            "is_former_employee": None,
+            "avg_weekly_hours_worked_org": _float(
+                _text(grp, "AverageHrsPerWkDevotedToPosRt")
+                or _text(grp, "AverageHoursPerWeekRt")
+            ),
+            "avg_weekly_hours_worked_related_org": None,
+            "compensation_from_org": _float(_text(grp, "CompensationAmt")),
+            "compensation_from_related_org": None,
+            "compensation_other": _float(_text(grp, "ExpenseAccountOtherAllwncAmt")),
+        })
+    return rows
+
+
+def _parse_990pf_grants(form_pf: etree._Element, ein: str | None,
+                        tax_year: int | None) -> list[dict[str, Any]]:
+    """Parse charitable grants paid during the year from a 990PF return.
+
+    Grants are listed in SupplementaryInformationGrp under
+    GrantOrContributionPdDurYrGrp elements. Recipient EINs are not required
+    on the PF form so grantee_ein will typically be NULL.
+    """
+    rows: list[dict[str, Any]] = []
+    supp = _child(form_pf, "SupplementaryInformationGrp")
+    if supp is None:
+        return rows
+    for grp in _findall(supp, "GrantOrContributionPdDurYrGrp"):
+        grantee_name = (
+            _text(grp, "RecipientBusinessName", "BusinessNameLine1Txt")
+            or _text(grp, "RecipientBusinessName", "BusinessNameLine1")
+            or _text(grp, "RecipientPersonNm")
+        )
+        grantee_ein = _text(grp, "RecipientEIN")
+        amount = _float(_text(grp, "Amt"))
+        if grantee_name or grantee_ein:
+            rows.append({
+                "grantor_ein": ein,
+                "grantee_ein": grantee_ein,
+                "grantee_name": grantee_name,
+                "amount": amount,
+                "tax_year": tax_year,
+            })
+    return rows
+
+
 def _parse_contractors(form: etree._Element, ein: str | None,
                     tax_year: int | None) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     contractor_groups = _findall(form, "ContractorCompensationGrp")
     if contractor_groups is None:
         return rows
-    # Accounting for potential variation in element tags
     for contractor_group in contractor_groups:
+        # ContractorName can be a person name (PersonNm) or a business name
+        # nested under BusinessName/BusinessNameLine1Txt.
         contractor = (
             _text(contractor_group, "ContractorName", "PersonNm")
+            or _text(contractor_group, "ContractorName", "BusinessName", "BusinessNameLine1Txt")
             or _text(contractor_group, "ContractorName", "BusinessNameLine1Txt")
         )
-        address = _text(contractor_group, "ContractorAddress", "AddressLine1Txt")
-        state_code = _text(contractor_group, "ContractorAddress", "StateAbbreviationCd")
-        city = _text(contractor_group, "ContractorAddress", "CityNm")
-        zip_code = _text(contractor_group, "ContractorAddress", "ZIPCd")
-        comp = _float(
-            _text(contractor_group, "CompensationAmt")
+        # ContractorAddress wraps a USAddress (domestic) or ForeignAddress element.
+        # The address fields live one level deeper than previously coded.
+        address = (
+            _text(contractor_group, "ContractorAddress", "USAddress", "AddressLine1Txt")
+            or _text(contractor_group, "ContractorAddress", "AddressLine1Txt")
         )
+        state_code = (
+            _text(contractor_group, "ContractorAddress", "USAddress", "StateAbbreviationCd")
+            or _text(contractor_group, "ContractorAddress", "StateAbbreviationCd")
+        )
+        city = (
+            _text(contractor_group, "ContractorAddress", "USAddress", "CityNm")
+            or _text(contractor_group, "ContractorAddress", "CityNm")
+        )
+        zip_code = (
+            _text(contractor_group, "ContractorAddress", "USAddress", "ZIPCd")
+            or _text(contractor_group, "ContractorAddress", "ZIPCd")
+        )
+        comp = _float(_text(contractor_group, "CompensationAmt"))
         services_desc = _text(contractor_group, "ServicesDesc")
         if contractor:
             rows.append({
@@ -309,6 +536,8 @@ _SCHEDULE_C_ACTIVITY_FLAGS = (
     ("RalliesDemonstrationsInd", "rallies_or_demonstrations"),
     ("OtherActivitiesInd", "other_activities"),
 )
+
+_TRANSACTION_TYPE_CODES = frozenset("ABCDEFGHIJKLMNOPQRS")
 
 
 def _parse_schedule_c(return_data: etree._Element, ein: str | None,
@@ -376,8 +605,8 @@ def _parse_schedule_c(return_data: etree._Element, ein: str | None,
     for section_527_org_group in section_527_org_groups:
         _527_ein = _text(section_527_org_group, "EIN")
         _527_name = _text(section_527_org_group,
-                          "OrganizationBusinessName", "BusinessNameLine1Text")
-        _527_address = _text(section_527_org_group, "USAddress", "AddressLine1Text")
+                          "OrganizationBusinessName", "BusinessNameLine1Txt")
+        _527_address = _text(section_527_org_group, "USAddress", "AddressLine1Txt")
         _527_city = _text(section_527_org_group, "USAddress", "CityNm")
         _527_state_code = _text(section_527_org_group, "USAddress", "StateAbbreviationCd")
         _527_zip_code = _text(section_527_org_group, "USAddress", "ZIPCd")
@@ -514,7 +743,9 @@ def _parse_schedule_r(
         for grp in sched_r_part_iv:
             related_org_ein = _text(grp, "EIN")
             related_org_name = _text(grp, "RelatedOrganizationName", "BusinessNameLine1Txt")
-            related_org_entity_type = _text(grp, "EntityTypeTxt")
+            related_org_entity_type = (
+                _text(grp, "EntityTypeTxt") or "Taxable Corporation or Trust"
+            )
             related_org_primary_activities = _text(grp, "PrimaryActivitiesTxt")
             related_org_control_ent = _text(grp, "DirectControllingEntityName",
                                                           "BusinessNameLine1Txt")
@@ -543,73 +774,371 @@ def _parse_schedule_r(
     if sched_r_transactions is not None:
         for grp in sched_r_transactions:
             related_org_name = _text(grp, "OtherOrganizationName", "BusinessNameLine1Txt")
-            related_org_transaction_type = _text(grp, "TransactionTypeTxt")
+            related_org_transaction_type = (_text(grp, "TransactionTypeTxt") or "").upper()
             related_org_transaction_amount = _float(_text(grp, "InvolvedAmt"))
             related_org_amount_determination_method = _text(grp, "MethodOfAmountDeterminationTxt")
-            transactions.append({
-                "filer_ein": ein,
-                "tax_year": tax_year,
-                "related_org_name": related_org_name,
-                "type": related_org_transaction_type,
-                "amount": related_org_transaction_amount,
-                "amount_determination_method": related_org_amount_determination_method
-            })
+            if related_org_name and related_org_transaction_type in _TRANSACTION_TYPE_CODES:
+                transactions.append({
+                    "filer_ein": ein,
+                    "tax_year": tax_year,
+                    "related_org_name": related_org_name,
+                    "type": related_org_transaction_type,
+                    "amount": related_org_transaction_amount,
+                    "amount_determination_method": related_org_amount_determination_method
+                })
 
     return related_orgs, transactions
 
-def ingest_990_file(path: str | Path) -> None:
-    """Parse and write a single 990 XML file to SQLite."""
-    init_db()
-    parsed = parse_990_file(path)
-    org = parsed["org"]
-    if not org.get("ein"):
-        logger.warning("Skipping %s: no EIN found", path)
-        return
-    with connect() as conn:
-        upsert(conn, "orgs", org)
-        insert_many(conn, "org_grants", parsed["grants"])
-        insert_many(conn, "org_people", parsed["people"])
-        insert_many(conn, "org_contractors", parsed["contractors"])
-        if parsed["lobbying"]:
-            upsert(conn, "org_lobbying", parsed["lobbying"])
-            upsert(conn, "section_527_org", parsed["section_527_org"])
-        if parsed["related_orgs"]:
-            upsert(conn, "related_org", parsed["related_orgs"])
-        if parsed["related_org_transactions"]:
-            upsert(conn, "related_org_transaction", parsed["related_org_transactions"])
+def _source_identity(path: str | Path) -> dict[str, Any]:
+    """Return cheap source metadata used to skip immutable completed objects."""
+    file_path = Path(path)
+    return {
+        "source_object_id": file_path.stem.removesuffix("_public"),
+        "file_name": file_path.name,
+        "file_path": str(file_path),
+        "byte_size": file_path.stat().st_size,
+    }
 
 
-def ingest_990_directory(directory: str | Path, pattern: str = "*.xml") -> int:
-    """Parse every matching XML file in a directory. Returns files ingested."""
-    init_db()
-    files = sorted(Path(directory).glob(pattern))
+def _source_metadata(path: str | Path, identity: dict[str, Any]) -> dict[str, Any]:
+    """Add a streaming fingerprint for new, changed, or reparsed source objects."""
+    file_path = Path(path)
+    digest = hashlib.sha256()
+    with file_path.open("rb") as xml_file:
+        for chunk in iter(lambda: xml_file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return {
+        **identity,
+        "content_sha256": digest.hexdigest(),
+    }
+
+
+def _replace_filing_rows(conn: Any, table: str, filing_id: int,
+                          rows: list[dict[str, Any]], ignored: set[str]) -> None:
+    """Replace one schedule's rows atomically, retaining source order."""
+    conn.execute(f"DELETE FROM {table} WHERE filing_id = ?", (filing_id,))
+    prepared = [
+        {
+            "filing_id": filing_id,
+            "line_no": line_no,
+            **{key: value for key, value in row.items() if key not in ignored},
+        }
+        for line_no, row in enumerate(rows, start=1)
+    ]
+    insert_many(conn, table, prepared)
+
+
+def _write_filing_v2(conn: Any, parsed: dict[str, Any], source: dict[str, Any]) -> None:
+    filing = parsed["filing"]
+    ein = filing["ein"]
+    conn.execute(
+        "INSERT INTO organizations (ein, current_name, normalized_name) VALUES (?, ?, ?) "
+        "ON CONFLICT(ein) DO UPDATE SET current_name = excluded.current_name, "
+        "normalized_name = excluded.normalized_name, last_seen_at = datetime('now')",
+        (ein, filing["name"], normalize_organization_name(filing["name"])),
+    )
+    conn.execute(
+        "INSERT INTO irs990_source_objects "
+        "(source_object_id, file_name, file_path, content_sha256, byte_size, parser_version, "
+        "ingest_status, attempt_count, last_attempt_at, completed_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, 'succeeded', 1, datetime('now'), datetime('now')) "
+        "ON CONFLICT(source_object_id) DO UPDATE SET "
+        "file_name = excluded.file_name, file_path = excluded.file_path, "
+        "content_sha256 = excluded.content_sha256, byte_size = excluded.byte_size, "
+        "parser_version = excluded.parser_version, ingest_status = 'succeeded', "
+        "attempt_count = irs990_source_objects.attempt_count + 1, last_error = NULL, "
+        "last_attempt_at = datetime('now'), completed_at = datetime('now')",
+        (
+            source["source_object_id"], source["file_name"], source["file_path"],
+            source["content_sha256"], source["byte_size"], PARSER_VERSION,
+        ),
+    )
+    filing_row = {
+        "source_object_id": source["source_object_id"],
+        "ein": ein,
+        "tax_year": filing["tax_year"],
+        "tax_period_end_date": filing["tax_period_end_date"],
+        "return_timestamp": filing["return_timestamp"],
+        "form_type": filing["form_type"],
+        "filer_name": filing["name"],
+        "exempt_organization_type": filing["exempt_organization_type"],
+        "total_revenue": filing["total_revenue"],
+        "total_expenses": filing["total_expenses"],
+        "total_assets": filing.get("total_assets"),
+        "voting_members_governing_body": filing.get("voting_members_governing_body"),
+        "voting_members_independent": filing.get("voting_members_independent"),
+        "total_volunteers": filing.get("total_volunteers"),
+        "website": filing.get("website"),
+        "total_salaries": filing.get("total_salaries"),
+        "unrestricted_net_assets_eoy": filing.get("unrestricted_net_assets_eoy"),
+        "fundraising_expenses": filing.get("fundraising_expenses"),
+        "political_activity_flag": filing["political_activity_flag"],
+        "mission": filing["mission"],
+    }
+    upsert(conn, "irs990_filings", filing_row)
+    filing_id = conn.execute(
+        "SELECT filing_id FROM irs990_filings WHERE source_object_id = ?",
+        (source["source_object_id"],),
+    ).fetchone()["filing_id"]
+    _replace_filing_rows(conn, "irs990_filing_grants", filing_id, parsed["grants"],
+                         {"grantor_ein", "tax_year"})
+    _replace_filing_rows(conn, "irs990_filing_people", filing_id, parsed["people"],
+                         {"ein", "tax_year"})
+    _replace_filing_rows(conn, "irs990_filing_contractors", filing_id, parsed["contractors"],
+                         {"ein", "tax_year"})
+    _replace_filing_rows(conn, "irs990_filing_527_orgs", filing_id,
+                         parsed["section_527_orgs"] or [], {"filer_ein", "tax_year"})
+    _replace_filing_rows(conn, "irs990_filing_related_orgs", filing_id,
+                         parsed["related_orgs"] or [], {"filer_ein", "tax_year"})
+    _replace_filing_rows(conn, "irs990_filing_related_org_transactions", filing_id,
+                         parsed["related_org_transactions"] or [], {"filer_ein", "tax_year"})
+    conn.execute("DELETE FROM irs990_filing_lobbying WHERE filing_id = ?", (filing_id,))
+    if parsed["lobbying"]:
+        upsert(conn, "irs990_filing_lobbying", {
+            "filing_id": filing_id,
+            **{key: value for key, value in parsed["lobbying"].items()
+               if key not in {"ein", "tax_year", "raw_json"}},
+        })
+    upsert(conn, "entity_observations", {
+        "source_system": "IRS990",
+        "source_record_id": source["source_object_id"],
+        "subject_role": "filer",
+        "native_identifier": ein,
+        "observed_name": filing["name"],
+        "normalized_name": normalize_organization_name(filing["name"]),
+        "irs_filing_id": filing_id,
+        "observed_at": filing["return_timestamp"],
+    })
+
+
+def _ingest_path(conn: Any, path: str | Path) -> str:
+    """Write one source object; return succeeded, skipped, missing_ein, or failed."""
+    identity = _source_identity(path)
+    source = _source_metadata(path, identity)
+    existing = conn.execute(
+        "SELECT content_sha256, byte_size, parser_version, ingest_status, attempt_count "
+        "FROM irs990_source_objects WHERE source_object_id = ?",
+        (identity["source_object_id"],),
+    ).fetchone()
+    if existing and existing["content_sha256"] != source["content_sha256"]:
+        conn.execute(
+            "UPDATE irs990_source_objects SET last_error = ?, last_attempt_at = datetime('now') "
+            "WHERE source_object_id = ?",
+            ("Content hash differs for an existing source object ID", source["source_object_id"]),
+        )
+        return "conflict"
+    if existing and existing["parser_version"] == PARSER_VERSION and existing["ingest_status"] == "succeeded":
+        return "skipped"
+    try:
+        parsed = parse_990_file(path)
+    except etree.XMLSyntaxError as exc:
+        upsert(conn, "irs990_source_objects", {
+            **source, "parser_version": PARSER_VERSION, "ingest_status": "parse_failed",
+            "attempt_count": (existing["attempt_count"] if existing else 0) + 1,
+            "last_error": str(exc)[:1000],
+        })
+        return "failed"
+    if not parsed["filing"].get("ein"):
+        upsert(conn, "irs990_source_objects", {
+            **source, "parser_version": PARSER_VERSION, "ingest_status": "skipped_missing_ein",
+            "attempt_count": (existing["attempt_count"] if existing else 0) + 1,
+            "last_error": "No filer EIN",
+        })
+        return "missing_ein"
+    _write_filing_v2(conn, parsed, source)
+    return "succeeded"
+
+
+def ingest_990_file(path: str | Path, db_path: Path | None = None) -> int:
+    """Ingest one IRS XML into canonical, filing-scoped v2 tables."""
+    init_db(db_path)
+    with connect(db_path) as conn:
+        return 1 if _ingest_path(conn, path) == "succeeded" else 0
+
+
+def ingest_990_directory(directory: str | Path, pattern: str = "*.xml",
+                         db_path: Path | None = None, batch_size: int = 250) -> int:
+    """Ingest a directory lazily; completed source objects are skipped on reruns."""
+    init_db(db_path)
     count = 0
-    with connect() as conn:
-        for fp in files:
-            try:
-                parsed = parse_990_file(fp)
-            except etree.XMLSyntaxError as exc:
-                logger.warning("Bad XML %s: %s", fp, exc)
-                continue
-            org = parsed["org"]
-            if not org.get("ein"):
-                continue
-            upsert(conn, "orgs", org)
-            insert_many(conn, "org_grants", parsed["grants"])
-            insert_many(conn, "org_people", parsed["people"])
-            insert_many(conn, "org_contractors", parsed["contractors"])
-            if parsed["lobbying"]:
-                upsert(conn, "org_lobbying", parsed["lobbying"])
-                upsert(conn, "section_527_org", parsed["section_527_orgs"])
-            if parsed["related_orgs"]:
-                upsert(conn, "related_org", parsed["related_orgs"])
-            if parsed["related_org_transactions"]:
-                upsert(conn, "related_org_transaction", parsed["related_org_transactions"])
-            count += 1
-            if count % 500 == 0:
-                logger.info("Ingested %d 990 files...", count)
-    logger.info("Ingested %d 990 files from %s", count, directory)
+    outcomes: dict[str, int] = {}
+    with connect(db_path) as conn:
+        for index, fp in enumerate(Path(directory).glob(pattern), start=1):
+            outcome = _ingest_path(conn, fp)
+            outcomes[outcome] = outcomes.get(outcome, 0) + 1
+            count += outcome == "succeeded"
+            if index % batch_size == 0:
+                conn.commit()
+                logger.info("IRS 990 progress: %d files, %d succeeded", index, count)
+    logger.info("IRS 990 ingest completed from %s: %s", directory, outcomes)
     return count
+
+
+def _ingest_zip_member(conn: Any, zf: "zipfile.ZipFile", member: "zipfile.ZipInfo") -> str:
+    """Ingest one XML member from an open ZipFile without extracting to disk.
+
+    Returns the same outcome strings as _ingest_path.
+    """
+    import zipfile as _zipfile
+    file_name = Path(member.filename).name
+    source_object_id = file_name.removesuffix("_public.xml")
+    byte_size = member.file_size
+
+    # Skip-check: if already succeeded with this parser version, avoid re-reading.
+    existing = conn.execute(
+        "SELECT content_sha256, byte_size, parser_version, ingest_status, attempt_count "
+        "FROM irs990_source_objects WHERE source_object_id = ?",
+        (source_object_id,),
+    ).fetchone()
+    if existing and existing["parser_version"] == PARSER_VERSION and existing["ingest_status"] == "succeeded":
+        return "skipped"
+
+    # Read bytes once; compute hash and parse from the same buffer.
+    raw = zf.read(member)
+    digest = hashlib.sha256(raw).hexdigest()
+
+    if existing and existing["content_sha256"] != digest:
+        conn.execute(
+            "UPDATE irs990_source_objects SET last_error = ?, last_attempt_at = datetime('now') "
+            "WHERE source_object_id = ?",
+            ("Content hash differs for an existing source object ID", source_object_id),
+        )
+        return "conflict"
+
+    source = {
+        "source_object_id": source_object_id,
+        "file_name": file_name,
+        "file_path": member.filename,
+        "byte_size": byte_size,
+        "content_sha256": digest,
+    }
+
+    try:
+        from io import BytesIO
+        tree = etree.parse(BytesIO(raw))
+        parsed = _parse_tree(tree)
+    except etree.XMLSyntaxError as exc:
+        upsert(conn, "irs990_source_objects", {
+            **source, "parser_version": PARSER_VERSION, "ingest_status": "parse_failed",
+            "attempt_count": (existing["attempt_count"] if existing else 0) + 1,
+            "last_error": str(exc)[:1000],
+        })
+        return "failed"
+
+    if not parsed["filing"].get("ein"):
+        upsert(conn, "irs990_source_objects", {
+            **source, "parser_version": PARSER_VERSION, "ingest_status": "skipped_missing_ein",
+            "attempt_count": (existing["attempt_count"] if existing else 0) + 1,
+            "last_error": "No filer EIN",
+        })
+        return "missing_ein"
+
+    _write_filing_v2(conn, parsed, source)
+    return "succeeded"
+
+
+def _uses_deflate64(zip_path: Path) -> bool:
+    """Return True if the zip uses Deflate64 (compress_type=9), unsupported by Python zipfile."""
+    import zipfile as _zipfile
+    with _zipfile.ZipFile(zip_path) as zf:
+        for m in zf.infolist():
+            if m.compress_type == 9:
+                return True
+    return False
+
+
+def ingest_990_zipfile(
+    zip_path: str | Path,
+    db_path: Path | None = None,
+    batch_size: int = 500,
+) -> dict[str, int]:
+    """Ingest all 990 XML files from a zip without extracting to disk.
+
+    Handles both flat zips (2019/2020 format: XMLs at root) and nested zips
+    (2023+ TEOS format: XMLs inside a single subdirectory).
+    Falls back to system `unzip` for Deflate64-compressed zips (compress_type=9)
+    which Python's built-in zipfile does not support.
+    Idempotent: already-succeeded files are skipped in a single DB lookup.
+    Returns an outcomes dict: {succeeded, skipped, failed, missing_ein, conflict}.
+    """
+    import zipfile as _zipfile
+    import tempfile, subprocess, shutil
+    init_db(db_path)
+    outcomes: dict[str, int] = {}
+    zip_path = Path(zip_path)
+
+    # Check if any member uses Deflate64 -- if so, extract to a temp dir first.
+    if _uses_deflate64(zip_path):
+        logger.info("ingest_990_zipfile: %s uses Deflate64, extracting via system unzip", zip_path.name)
+        tmp_dir = tempfile.mkdtemp(dir="/tmp")
+        try:
+            subprocess.run(
+                ["unzip", "-q", str(zip_path), "*.xml", "-d", tmp_dir],
+                check=True,
+            )
+            xml_files = sorted(Path(tmp_dir).rglob("*.xml"))
+            total = len(xml_files)
+            logger.info("ingest_990_zipfile: %s -- %d XML members (via unzip)", zip_path.name, total)
+            with connect(db_path) as conn:
+                for index, fp in enumerate(xml_files, start=1):
+                    outcome = _ingest_path(conn, fp)
+                    outcomes[outcome] = outcomes.get(outcome, 0) + 1
+                    if index % batch_size == 0:
+                        conn.commit()
+                        logger.info(
+                            "%s progress: %d/%d  outcomes=%s",
+                            zip_path.name, index, total, outcomes,
+                        )
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+    else:
+        with _zipfile.ZipFile(zip_path) as zf:
+            members = [m for m in zf.infolist()
+                       if m.filename.endswith(".xml") and not m.is_dir()]
+            total = len(members)
+            logger.info("ingest_990_zipfile: %s -- %d XML members", zip_path.name, total)
+
+            with connect(db_path) as conn:
+                for index, member in enumerate(members, start=1):
+                    outcome = _ingest_zip_member(conn, zf, member)
+                    outcomes[outcome] = outcomes.get(outcome, 0) + 1
+                    if index % batch_size == 0:
+                        conn.commit()
+                        logger.info(
+                            "%s progress: %d/%d  outcomes=%s",
+                            zip_path.name, index, total, outcomes,
+                        )
+
+    logger.info("ingest_990_zipfile done: %s  outcomes=%s", zip_path.name, outcomes)
+    return outcomes
+
+
+def ingest_990_zip_folder(
+    folder: str | Path,
+    db_path: Path | None = None,
+    batch_size: int = 500,
+) -> dict[str, int]:
+    """Ingest all *.zip files in a folder, in sorted order.
+
+    Each zip is ingested sequentially and idempotently -- safe to interrupt
+    and resume. Returns cumulative outcomes across all zips.
+    """
+    import zipfile as _zipfile
+    folder = Path(folder)
+    zips = sorted(folder.glob("*.zip"))
+    if not zips:
+        logger.warning("ingest_990_zip_folder: no *.zip files found in %s", folder)
+        return {}
+
+    logger.info("ingest_990_zip_folder: %d zips in %s", len(zips), folder)
+    total_outcomes: dict[str, int] = {}
+    for i, zp in enumerate(zips, start=1):
+        logger.info("[%d/%d] Starting %s", i, len(zips), zp.name)
+        outcomes = ingest_990_zipfile(zp, db_path=db_path, batch_size=batch_size)
+        for k, v in outcomes.items():
+            total_outcomes[k] = total_outcomes.get(k, 0) + v
+        logger.info("[%d/%d] Done %s  running totals=%s", i, len(zips), zp.name, total_outcomes)
+    return total_outcomes
 
 
 def iter_parsed(directory: str | Path, pattern: str = "*.xml") -> Iterable[dict[str, Any]]:

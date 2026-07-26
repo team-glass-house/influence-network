@@ -75,3 +75,35 @@ falls back to `DEMO_KEY` if you don't set one. See `.env.example` for details.
   locally.
 
 
+## IRS 990 storage and joins
+
+The canonical IRS import tables are filing-scoped: `irs990_filings` and its
+`irs990_filing_*` schedule tables. `organizations` holds the stable EIN-level
+identity, while `irs990_source_objects` records the immutable IRS filename,
+fingerprint, parser version, and import state. This preserves multiple returns
+for one EIN and lets bulk imports resume without reparsing completed files.
+
+The older `orgs` and `org_*` tables remain for compatibility with early
+notebooks, but should not be used for multi-year IRS analysis. Use
+`irs990_filings` as the starting point, then join schedule tables on
+`filing_id`.
+
+IRS, FEC, and LDA do not share a universal ID. `extract.entities` normalizes
+names and persists exact normalized-name results as reviewable candidates in
+`entity_match_candidates`; they are not automatic identity assertions. Accept
+or reject candidates in `entity_match_decisions` before using them as joins.
+
+## Project workflow
+
+Use one SQLite file per research dataset. Load IRS, FEC, LDA, and Congress data
+into that same file by passing `db_path=...` to each collector, then run
+`extract.pipeline.refresh_analysis_layers`. The refresh creates reviewable
+name-match candidates, extracts explicit lobbying bill references, and builds
+views for grants, related organizations, approved external links, and
+organization-to-bill facts.
+
+`notebooks/01_build_dataset.ipynb` is the loading workflow and
+`notebooks/02_review_and_explore.ipynb` is the review/analysis workflow. They
+intentionally import reusable Python functions rather than carrying their own
+ETL or matching logic. Cross-source names become analysis joins only after a
+reviewer records an `accepted` decision.

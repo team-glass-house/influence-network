@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+from pathlib import Path
 
 
 def _setup_logging(verbose: bool) -> None:
@@ -36,6 +37,8 @@ def _setup_logging(verbose: bool) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="extract", description=__doc__)
     parser.add_argument("-v", "--verbose", action="store_true")
+    parser.add_argument("--db", type=Path, default=None,
+                        help="SQLite database path (defaults to DB_PATH in config)")
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("init-db", help="Create the SQLite schema")
@@ -67,37 +70,41 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "init-db":
         from .db import init_db
-        init_db()
+        init_db(args.db)
         print("Database initialized.")
         return 0
 
     if args.command == "congress":
         from .congress import CongressCollector
-        n = CongressCollector().collect_bills(args.congress, args.bill_type, args.limit)
+        n = CongressCollector(db_path=args.db).collect_bills(
+            args.congress, args.bill_type, args.limit
+        )
         print(f"Collected {n} bills.")
         return 0
 
     if args.command == "fec-committees":
         from .fec import FecCollector
-        n = FecCollector().collect_committees(args.committee_type, args.limit)
+        n = FecCollector(db_path=args.db).collect_committees(args.committee_type, args.limit)
         print(f"Collected {n} committees.")
         return 0
 
     if args.command == "fec-disbursements":
         from .fec import FecCollector
-        n = FecCollector().collect_disbursements(args.cycle, args.committee_id, args.limit)
+        n = FecCollector(db_path=args.db).collect_disbursements(
+            args.cycle, args.committee_id, args.limit
+        )
         print(f"Collected {n} disbursements.")
         return 0
 
     if args.command == "lda":
         from .lda import LdaCollector
-        n = LdaCollector().collect_filings(args.year, args.limit)
+        n = LdaCollector(db_path=args.db).collect_filings(args.year, args.limit)
         print(f"Collected {n} LDA filings.")
         return 0
 
     if args.command == "irs990":
         from .irs990 import ingest_990_directory
-        n = ingest_990_directory(args.dir, args.pattern)
+        n = ingest_990_directory(args.dir, args.pattern, db_path=args.db)
         print(f"Ingested {n} 990 files.")
         return 0
 
