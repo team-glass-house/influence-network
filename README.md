@@ -7,6 +7,45 @@ money and lobbying actually connect to policy outcomes. See
 `influence_network.md` for the full project writeup (motivation, methodology,
 data sources, prior work).
 
+## Architecture
+
+High level: pull four public data sources, parse and link them, store everything
+in one SQLite database, and explore it through a Streamlit dashboard.
+
+```mermaid
+flowchart TB
+    subgraph Sources["Public Data Sources"]
+        IRS["IRS 990<br/>Nonprofit filings"]
+        FEC["FEC<br/>Campaign finance"]
+        LDA["LDA<br/>Lobbying disclosures"]
+        CONG["Congress<br/>Bills"]
+    end
+
+    subgraph Pipeline["Extraction &amp; Processing"]
+        EXTRACT["Fetch &amp; parse<br/>(extract/ pipeline)"]
+        MATCH["Entity matching<br/>(link orgs across sources)"]
+    end
+
+    DB[("SQLite Database<br/>irs990_full.db")]
+
+    subgraph App["Streamlit Dashboard"]
+        OV["Overview &amp; orgs"]
+        NET["Grant / personnel networks"]
+        POL["Political spending &amp; lobbying"]
+        LINK["Org &rarr; Bill policy links"]
+    end
+
+    IRS --> EXTRACT
+    FEC --> EXTRACT
+    LDA --> EXTRACT
+    CONG --> EXTRACT
+
+    EXTRACT --> DB
+    DB --> MATCH --> DB
+    DB --> App
+```
+
+Run the dashboard with `streamlit run app/streamlit_app.py`.
 ## Setup
 
 ```bash
@@ -34,6 +73,7 @@ falls back to `DEMO_KEY` if you don't set one. See `.env.example` for details.
   to sanity-check the parsers without needing real bulk data.
 - `data/` - gitignored; this is where extracted/downloaded data lands
   locally.
+
 
 ## IRS 990 storage and joins
 

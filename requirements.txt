@@ -10,3 +10,8 @@ numpy>=1.26.0         # vector math for cosine similarity
 scikit-learn>=1.6.0   # TF-IDF cosine similarity backend (analysis/align.py)
 pypdf>=6.1.0          # PDF text extraction (pdf_similarity notebook)
 pymupdf>=1.26.0       # fitz - used to build sample PDFs for the PDF similarity demo
+
+# Streamlit dashboard (app/streamlit_app.py)
+streamlit>=1.40.0     # interactive dashboard UI
+plotly>=5.24.0        # charts and network graph rendering
+networkx>=3.2         # grant-flow network graph construction
