@@ -140,6 +140,11 @@ class LdaCollector:
                         upsert(conn, "lda_filings", {
                             "filing_uuid": uuid,
                             "client_name": client_info.get("name"),
+                            "client_id": client_info.get("client_id") or client_info.get("id"),
+                            "client_address": client_info.get("address_1"),
+                            "client_city": client_info.get("city"),
+                            "client_state": client_info.get("state"),
+                            "client_zip_code": client_info.get("zip"),
                             "registrant_name": registrant.get("name"),
                             "filing_year": f.get("filing_year"),
                             "filing_period": f.get("filing_period"),
