@@ -1,23 +1,4 @@
-"""Command-line entry point for the extraction pipeline.
-
-Examples
---------
-Initialize the database schema:
-    python -m extract.run init-db
-
-Pull House bills from the 118th Congress (cap for a quick test):
-    python -m extract.run congress --congress 118 --bill-type hr --limit 25
-
-Pull Super PACs and 2024 disbursements:
-    python -m extract.run fec-committees --committee-type O --limit 200
-    python -m extract.run fec-disbursements --cycle 2024 --limit 500
-
-Pull 2024 lobbying filings:
-    python -m extract.run lda --year 2024 --limit 200
-
-Parse a folder of IRS 990 XML files:
-    python -m extract.run irs990 --dir data/irs990_xml
-"""
+"""Command-line entry point for the extraction pipeline."""
 from __future__ import annotations
 
 import argparse
@@ -64,6 +45,20 @@ def main(argv: list[str] | None = None) -> int:
     p_irs = sub.add_parser("irs990", help="Parse IRS 990 XML files in a folder")
     p_irs.add_argument("--dir", required=True)
     p_irs.add_argument("--pattern", default="*.xml")
+    p_refresh = sub.add_parser(
+        "refresh-analysis",
+        help="Sync entity observations, generate candidates, and rebuild views",
+    )
+    p_refresh.add_argument(
+        "--no-fuzzy",
+        action="store_true",
+        help="Generate exact candidates only",
+    )
+    p_refresh.add_argument(
+        "--include-relationships",
+        action="store_true",
+        help="Include broader parent/subsidiary and regional discovery candidates",
+    )
 
     args = parser.parse_args(argv)
     _setup_logging(args.verbose)
@@ -106,6 +101,16 @@ def main(argv: list[str] | None = None) -> int:
         from .irs990 import ingest_990_directory
         n = ingest_990_directory(args.dir, args.pattern, db_path=args.db)
         print(f"Ingested {n} 990 files.")
+        return 0
+
+    if args.command == "refresh-analysis":
+        from .pipeline import refresh_analysis_layers
+        result = refresh_analysis_layers(
+            args.db,
+            include_fuzzy_candidates=not args.no_fuzzy,
+            include_relationship_candidates=args.include_relationships,
+        )
+        print(result.as_dict())
         return 0
 
     parser.error(f"Unknown command: {args.command}")
