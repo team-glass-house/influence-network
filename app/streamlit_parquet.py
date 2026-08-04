@@ -28,25 +28,37 @@ import streamlit as st
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-PARQUET_BASE = os.environ.get("PARQUET_BASE", str(ROOT / "parquet_export"))
+
+def _cfg(name: str, default: str | None = None) -> str | None:
+    """Read config from Streamlit Secrets first (Community Cloud), then env,
+    then a default. Lets the same code run deployed and locally."""
+    try:
+        val = st.secrets.get(name)
+        if val:
+            return val
+    except Exception:
+        pass
+    return os.environ.get(name, default)
+
+
+# On Community Cloud set PARQUET_BASE in Secrets (e.g. s3://.../parquet).
+# Locally it defaults to the on-disk export.
+PARQUET_BASE = _cfg("PARQUET_BASE", str(ROOT / "parquet_export"))
 
 # Base tables that were exported to Parquet (members had 0 rows -> skipped).
 TABLES = [
-    "bill_actions", "bill_sponsors", "bill_text_versions", "bills",
-    "committees", "crp_dark_money", "dash_filings_by_year",
-    "dash_most_lobbied_bills", "dash_political_orgs", "entity_match_candidates",
-    "entity_match_decisions", "entity_observations", "fec_disbursements",
-    "irs990_filing_527_orgs", "irs990_filing_contractors", "irs990_filing_grants",
-    "irs990_filing_lobbying", "irs990_filing_people",
-    "irs990_filing_related_org_transactions", "irs990_filing_related_orgs",
-    "irs990_filings", "irs990_source_objects", "irs_master", "lda_filings",
-    "lda_lobbying_activities", "lobbying_bill_links", "organizations",
+    # Only the tables the app actually queries (others were materialized away).
+    "organizations", "irs990_filings", "irs990_filing_people",
+    "committees", "bills",
+    "dash_filings_by_year", "dash_most_lobbied_bills", "dash_political_orgs",
+    "lda_filings", "lda_lobbying_activities", "lobbying_bill_links",
     "organization_policy_links",  # pre-materialized (scripts/materialize_policy_links.py)
+    "org_grants", "grant_network_edges",  # pre-materialized (scripts/materialize_grants.py)
 ]
 
-# Derived views (recreated in DuckDB, in dependency order). Ported from the
-# SQLite view definitions; lobbying_bill_facts uses integer division (//) for
-# the congress calc so DuckDB matches SQLite.
+# Derived views still computed live (small). Heavy ones were pre-materialized.
+# lobbying_bill_facts uses integer division (//) for the congress calc so DuckDB
+# matches SQLite.
 VIEW_SQL: list[tuple[str, str]] = [
     ("committee_spending_summary", """
         SELECT committee_id, name, committee_type, cycle,
@@ -54,23 +66,6 @@ VIEW_SQL: list[tuple[str, str]] = [
                independent_expenditures, cash_on_hand_end_period
         FROM committees
         WHERE total_disbursements IS NOT NULL
-    """),
-    ("grant_network_edges", """
-        SELECT filing.ein AS source_ein, grant_row.grantee_ein AS target_ein,
-               'grant' AS edge_type, SUM(grant_row.amount) AS amount,
-               COUNT(*) AS supporting_rows
-        FROM irs990_filings AS filing
-        JOIN irs990_filing_grants AS grant_row USING (filing_id)
-        WHERE grant_row.grantee_ein IS NOT NULL AND grant_row.grantee_ein <> ''
-        GROUP BY filing.ein, grant_row.grantee_ein
-    """),
-    ("related_organization_edges", """
-        SELECT filing.ein AS source_ein, related.ein AS target_ein,
-               'related_organization' AS edge_type, COUNT(*) AS supporting_rows
-        FROM irs990_filings AS filing
-        JOIN irs990_filing_related_orgs AS related USING (filing_id)
-        WHERE related.ein IS NOT NULL AND related.ein <> ''
-        GROUP BY filing.ein, related.ein
     """),
     ("lobbying_bill_facts", """
         SELECT l.filing_uuid, l.filing_year, l.client_name, l.registrant_name,
@@ -84,59 +79,6 @@ VIEW_SQL: list[tuple[str, str]] = [
           AND bills.congress = CAST((l.filing_year - 1789) // 2 AS INTEGER) + 1
         LEFT JOIN lda_lobbying_activities AS activity
                ON activity.filing_uuid = l.filing_uuid
-    """),
-    ("approved_external_entity_links", """
-        WITH latest_decisions AS (
-            SELECT d.* FROM entity_match_decisions AS d
-            JOIN (
-                SELECT candidate_id, MAX(decision_id) AS decision_id
-                FROM entity_match_decisions GROUP BY candidate_id
-            ) AS latest USING (candidate_id, decision_id)
-            WHERE d.decision = 'accepted'
-        )
-        SELECT DISTINCT
-            CASE WHEN left_obs.source_system = 'IRS990'
-                 THEN left_obs.native_identifier ELSE right_obs.native_identifier END AS ein,
-            CASE WHEN left_obs.source_system = 'IRS990'
-                 THEN right_obs.source_system ELSE left_obs.source_system END AS external_source_system,
-            CASE WHEN left_obs.source_system = 'IRS990'
-                 THEN right_obs.source_record_id ELSE left_obs.source_record_id END AS external_source_record_id,
-            candidate.candidate_id, candidate.matcher_name, candidate.score,
-            latest_decisions.decision_id, latest_decisions.reviewer,
-            latest_decisions.rationale, latest_decisions.decided_at
-        FROM entity_match_candidates AS candidate
-        JOIN latest_decisions ON latest_decisions.candidate_id = candidate.candidate_id
-        JOIN entity_observations AS left_obs ON left_obs.observation_id = candidate.left_observation_id
-        JOIN entity_observations AS right_obs ON right_obs.observation_id = candidate.right_observation_id
-        WHERE (left_obs.source_system = 'IRS990' AND right_obs.source_system IN ('FEC', 'LDA'))
-           OR (right_obs.source_system = 'IRS990' AND left_obs.source_system IN ('FEC', 'LDA'))
-    """),
-    ("organization_fec_disbursements", """
-        SELECT links.ein, links.candidate_id, committee.committee_id,
-               committee.name AS committee_name, disbursement.sub_id,
-               disbursement.disbursement_date, disbursement.recipient_name,
-               disbursement.disbursement_amount,
-               disbursement.disbursement_description
-        FROM approved_external_entity_links AS links
-        JOIN committees AS committee
-          ON links.external_source_system = 'FEC'
-         AND links.external_source_record_id = committee.committee_id
-        JOIN fec_disbursements AS disbursement
-          ON disbursement.committee_id = committee.committee_id
-    """),
-    ("org_sector_summary", """
-        SELECT f.ein, f.filer_name, m.ntee_code, m.subsection_code, m.state,
-               m.asset_amt, m.income_amt,
-               SUM(f.total_revenue)  AS total_revenue_all_years,
-               SUM(f.total_expenses) AS total_expenses_all_years,
-               MAX(f.tax_year)       AS latest_tax_year,
-               COUNT(*)              AS filing_count,
-               CASE WHEN dm.ein IS NOT NULL THEN 1 ELSE 0 END AS is_dark_money_flagged
-        FROM irs990_filings AS f
-        LEFT JOIN irs_master AS m ON m.ein = f.ein
-        LEFT JOIN crp_dark_money AS dm ON dm.ein = f.ein
-        GROUP BY f.ein, f.filer_name, m.ntee_code, m.subsection_code, m.state,
-                 m.asset_amt, m.income_amt, dm.ein
     """),
 ]
 
@@ -173,7 +115,7 @@ def get_con() -> duckdb.DuckDBPyConnection:
     is_s3 = PARQUET_BASE.startswith("s3://")
     if is_s3:
         con.execute("INSTALL httpfs; LOAD httpfs;")
-        region = os.environ.get("AWS_DEFAULT_REGION", "us-east-2")
+        region = _cfg("AWS_DEFAULT_REGION", "us-east-2")
         key, sec = _resolve_aws_creds()
         if key and sec:
             # CREATE SECRET (not SET s3_*): a secret is shared across cursors,
@@ -229,7 +171,7 @@ st.sidebar.caption(f"Source: {PARQUET_BASE}")
 def page_overview() -> None:
     st.title("Overview")
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("IRS 990 filings", f"{scalar('SELECT COUNT(*) FROM irs990_filings'):,}")
+    c1.metric("IRS 990 filings", f"{scalar('SELECT SUM(filings) FROM dash_filings_by_year'):,}")
     c2.metric("Organizations", f"{scalar('SELECT COUNT(*) FROM organizations'):,}")
     c3.metric("Super PACs", f"{scalar('SELECT COUNT(*) FROM committee_spending_summary'):,}")
     c4.metric("LDA filings", f"{scalar('SELECT COUNT(*) FROM lda_filings'):,}")
@@ -294,9 +236,9 @@ def page_organizations() -> None:
     with col1:
         st.subheader("Grants paid (Schedule I)")
         st.dataframe(run_query("""
-            SELECT f.tax_year, g.grantee_name, g.grantee_ein, g.amount
-            FROM irs990_filings f JOIN irs990_filing_grants g USING (filing_id)
-            WHERE f.ein = ? AND g.amount IS NOT NULL ORDER BY g.amount DESC LIMIT 200
+            SELECT tax_year, grantee_name, grantee_ein, amount
+            FROM org_grants
+            WHERE grantor_ein = ? ORDER BY amount DESC LIMIT 200
         """, (ein,)), use_container_width=True, hide_index=True)
     with col2:
         st.subheader("Lobbying linked to this org")
