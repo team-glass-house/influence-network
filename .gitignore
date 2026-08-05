@@ -217,6 +217,9 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
+# Local dependency manifests
+requirements.txt
+
 # Project: extracted data + local databases
 data/
 *.db
