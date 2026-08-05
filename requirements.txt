@@ -1,22 +1,17 @@
-# Local dev / full pipeline dependencies (NOT installed on Streamlit Cloud).
-# The deployed Parquet app (app/streamlit_parquet.py) only needs the small set
-# in requirements-runtime.txt. Install both when running the extraction
-# pipeline, notebooks, or the SQLite app's lobbying<->bill alignment page:
-#     pip install -r requirements-runtime.txt -r requirements.txt
-
-# Data extraction
+# Core data extraction dependencies
 requests>=2.31.0
 python-dotenv>=1.0.0
 tenacity>=8.2.0        # retry/backoff for flaky APIs
 lxml>=5.0.0           # fast IRS 990 XML parsing
 tqdm>=4.66.0          # progress bars for bulk pulls
+pandas>=2.1.0         # downstream wrangling
+sentence-transformers>=3.0.0  # semantic text embeddings
+numpy>=1.26.0         # vector math for cosine similarity
+scikit-learn>=1.6.0   # TF-IDF cosine similarity backend (analysis/align.py)
+pypdf>=6.1.0          # PDF text extraction (pdf_similarity notebook)
+pymupdf>=1.26.0       # fitz - used to build sample PDFs for the PDF similarity demo
 
-# NLP / alignment (analysis/align.py, pdf notebooks)
-sentence-transformers>=3.0.0  # semantic text embeddings (pulls in torch)
-numpy>=1.26.0
-scikit-learn>=1.6.0   # TF-IDF cosine similarity backend
-pypdf>=6.1.0          # PDF text extraction
-pymupdf>=1.26.0       # fitz - sample PDFs for the similarity demo
-
-# Uploading Parquet to S3 (scripts/upload_parquet_s3.py, inspect scripts)
-boto3>=1.34.0
+# Streamlit dashboard (app/streamlit_app.py)
+streamlit>=1.40.0     # interactive dashboard UI
+plotly>=5.24.0        # charts and network graph rendering
+networkx>=3.2         # grant-flow network graph construction
