@@ -4,9 +4,14 @@ indicates lower transparency and a score of 0 indicates higher transparency.
 import sqlite3
 from pathlib import Path
 
+import boto3
 import pandas as pd
 
+from .config import settings
+from .s3_manager import df_to_s3
 from .semantic_url_verification import *
+
+CONN = sqlite3.connect(settings.db_path)
 
 RELATED_527_QUERY = """-- Some related orgs don't have any EINs reported; see filing_id 1433 for example
     select filing_id, count(filing_id) as num_527s
@@ -97,21 +102,21 @@ VOLUNTEER_CUTOFF = 0
 RELATED_527_CUTOFF = 0
 RELATED_C3_CUTOFF = 0
 
-def get_connection(path_to_db: str | Path) -> sqlite3.Connection:
-    return sqlite3.connect(path_to_db)
-
-def get_transparency_index_data(conn: sqlite3.Connection, csv_path: str | None = None) -> pd.DataFrame:
-    transparency_data = pd.read_sql(TRANSPARENCY_INDEX_SOURCE_QUERY, conn)
+def get_transparency_index_data(store: bool = True) -> pd.DataFrame:
+    transparency_data = pd.read_sql(TRANSPARENCY_INDEX_SOURCE_QUERY, CONN)
     # Handle null values based on column datatype
     transparency_data = transparency_data.fillna(
         value={col: 0 if transparency_data.loc[:, col].dtype == float else '' for col in transparency_data.columns}
     )
     
-    if csv_path not in ("", None):
-        transparency_data.to_csv(csv_path, index=False)
+    if store:
+        df_to_s3(
+            df=transparency_data,
+            path='parquet/transparency_source_data.parquet'
+        )
     return transparency_data
 
-def calculate_index_components(transparency_df: pd.DataFrame, conn: sqlite3.Connection) -> pd.DataFrame:
+def calculate_index_components(transparency_df: pd.DataFrame, store: bool = True) -> pd.DataFrame:
     calculated_df = transparency_df.loc[:, ['filing_id', 'ein']]
 
     # * Board members: scale the largest board size by constant
@@ -122,7 +127,7 @@ def calculate_index_components(transparency_df: pd.DataFrame, conn: sqlite3.Conn
 
     # TODO: Website
     calculated_df = calculated_df.merge(
-        right=website_component(transparency_df.loc[:, ['filing_id', 'website']], conn),
+        right=website_component(transparency_df.loc[:, ['filing_id', 'website']]),
         on="filing_id",
         how="left"
     )
@@ -162,10 +167,16 @@ def calculate_index_components(transparency_df: pd.DataFrame, conn: sqlite3.Conn
     # * Final Index score
     calculated_df['index'] = calculated_df.iloc[:, 2:].sum(axis=1)
 
+    # * Store in S3
+    df_to_s3(
+        df=calculated_df,
+        path='parquet/transparency_index.parquet'
+    )
+
     return calculated_df
 
 
-def website_component(website_df: pd.DataFrame, conn: sqlite3.Connection) -> pd.DataFrame:
+def website_component(website_df: pd.DataFrame) -> pd.DataFrame:
     # First verification pass
     website_df['c4_valid'] = website_df.loc[:, 'website'].apply(lambda x: semantic_verification(x))
 
@@ -176,7 +187,7 @@ def website_component(website_df: pd.DataFrame, conn: sqlite3.Connection) -> pd.
     """
     c3_websites = pd.read_sql(
         c3_web_query,
-        conn
+        CONN
     )
 
     # Score the c3_websites and choose the best website, accounting for multiple related C3s
