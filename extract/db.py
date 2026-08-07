@@ -207,6 +207,11 @@ CREATE TABLE IF NOT EXISTS irs990_filings (
     total_salaries                  REAL,    -- CYSalariesCompEmpBnftPaidAmt
     unrestricted_net_assets_eoy     REAL,    -- NoDonorRestrictionNetAssetsGrp/EOYAmt (new) or UnrestrictedNetAssetsGrp/EOYAmt (old)
     fundraising_expenses            REAL,    -- CYTotalProfFndrsngExpnsAmt
+    filer_address_line1      TEXT,    -- ReturnHeader/Filer/USAddress AddressLine1Txt (or ForeignAddress)
+    filer_address_line2      TEXT,    -- AddressLine2Txt
+    filer_city               TEXT,    -- CityNm
+    filer_state              TEXT,    -- StateAbbreviationCd (or ProvinceOrStateNm for foreign)
+    filer_zip                TEXT,    -- ZIPCd (or ForeignPostalCd)
     political_activity_flag  INTEGER,
     mission                  TEXT,
     parsed_at                TEXT DEFAULT (datetime('now'))
@@ -368,6 +373,17 @@ def init_db(db_path: Path | None = None) -> None:
         ):
             if column not in committee_columns:
                 conn.execute(f"ALTER TABLE committees ADD COLUMN {column} {definition}")
+        # Add filer address columns to irs990_filings for older databases.
+        filing_columns = {row["name"] for row in conn.execute("PRAGMA table_info(irs990_filings)")}
+        for column, definition in (
+            ("filer_address_line1", "TEXT"),
+            ("filer_address_line2", "TEXT"),
+            ("filer_city", "TEXT"),
+            ("filer_state", "TEXT"),
+            ("filer_zip", "TEXT"),
+        ):
+            if column not in filing_columns:
+                conn.execute(f"ALTER TABLE irs990_filings ADD COLUMN {column} {definition}")
         # Add new columns to irs990_filings (schema migrations for existing databases).
         filings_columns = {row["name"] for row in conn.execute("PRAGMA table_info(irs990_filings)")}
         for col, defn in (
