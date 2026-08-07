@@ -56,7 +56,8 @@ page = st.sidebar.radio(
     ["Overview", "Organizations (IRS 990)", "Grant network",
      "Shared-personnel network", "Politically active orgs",
      "Super PAC spending", "Lobbying \u2192 Bills",
-     "Lobbying \u2194 Bill alignment", "Org \u2192 Policy links"],
+     "Lobbying \u2194 Bill alignment", "Figure 3 - What they lobby on",
+     "Figure 4 - Organization to legislation", "Org \u2192 Policy links"],
 )
 st.sidebar.caption(f"Source: {DB_PATH.name}")
 
@@ -248,6 +249,191 @@ def page_lobbying() -> None:
                 st.warning("No matching lobbying records.")
             else:
                 st.dataframe(df, use_container_width=True, hide_index=True)
+
+
+# --- Figure 3: policy-area concentration -------------------------------------
+def page_figure_three() -> None:
+    st.title("Figure 3 - What they lobby on")
+    st.caption(
+        "Lobbying clusters by policy area or bill. Counts are distinct clients "
+        "or LDA filings, so this shows concentration of attention rather than "
+        "causal influence."
+    )
+    dimension = st.radio("Group by", ["Policy area", "Bill"], horizontal=True)
+    measure = st.radio(
+        "Measure", ["Distinct lobbying clients", "Lobbying filings"], horizontal=True
+    )
+    top_n = st.slider("Policy areas or bills to show", 5, 40, 15)
+    count_expression = (
+        "COUNT(DISTINCT client_name)"
+        if measure == "Distinct lobbying clients"
+        else "COUNT(DISTINCT filing_uuid)"
+    )
+    if dimension == "Policy area":
+        df = run_query(f"""
+            SELECT COALESCE(NULLIF(policy_area, ''),
+                            NULLIF(general_issue_code, ''),
+                            'Unclassified') AS topic,
+                   {count_expression} AS count
+            FROM lobbying_bill_facts
+            WHERE bill_id IS NOT NULL
+            GROUP BY topic
+            ORDER BY count DESC
+            LIMIT ?
+        """, (top_n,))
+        axis_label = "Policy area"
+    else:
+        df = run_query(f"""
+            SELECT bill_id || ' - ' || COALESCE(title, '(untitled)') AS topic,
+                   {count_expression} AS count
+            FROM lobbying_bill_facts
+            WHERE bill_id IS NOT NULL
+            GROUP BY bill_id, title
+            ORDER BY count DESC
+            LIMIT ?
+        """, (top_n,))
+        axis_label = "Bill"
+    if df.empty:
+        st.info("No linked lobbying-to-bill records are available for this figure.")
+        return
+    df = df.sort_values("count")
+    fig = px.bar(
+        df,
+        x="count",
+        y="topic",
+        orientation="h",
+        labels={"count": measure, "topic": axis_label},
+        title=f"{measure} by {dimension.lower()}",
+        text="count",
+    )
+    fig.update_traces(textposition="outside")
+    st.plotly_chart(fig, use_container_width=True)
+    st.dataframe(
+        df.sort_values("count", ascending=False),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+# --- Figure 4: organization -> money -> legislation -------------------------
+def page_figure_four() -> None:
+    st.title("Figure 4 - Organization to dollars to legislation")
+    st.caption(
+        "A Sankey view of reviewer-approved organization-to-LDA links. Link "
+        "width is reported lobbying income/expense allocated to linked bills; "
+        "when one filing names several bills, the same filing amount can appear "
+        "in more than one legislative path."
+    )
+    max_rows = st.slider(
+        "Candidate linked paths to inspect", 500, 10000, 4000, step=500
+    )
+    max_orgs = st.slider("Organizations", 3, 25, 12)
+    max_areas = st.slider("Policy areas", 3, 20, 10)
+    max_bills = st.slider("Bills", 5, 40, 20)
+    paths = run_query("""
+        SELECT links.ein, links.client_name, links.bill_id, links.title,
+               COALESCE(NULLIF(links.policy_area, ''),
+                        NULLIF(issue.issue_code, ''),
+                        'Unclassified') AS policy_area,
+               SUM(COALESCE(reported_lobbying_amount, 0)) AS dollars
+        FROM organization_policy_links AS links
+        LEFT JOIN (
+            SELECT filing_uuid, bill_id, MAX(general_issue_code) AS issue_code
+            FROM lobbying_bill_facts
+            GROUP BY filing_uuid, bill_id
+        ) AS issue
+          ON issue.filing_uuid = links.filing_uuid
+         AND issue.bill_id = links.bill_id
+        WHERE links.bill_id IS NOT NULL
+        GROUP BY links.ein, links.client_name, links.bill_id, links.title,
+                 links.policy_area, issue.issue_code
+        HAVING dollars > 0
+        ORDER BY dollars DESC
+        LIMIT ?
+    """, (max_rows,))
+    if paths.empty:
+        st.info("No approved organization-to-legislation links with reported dollars.")
+        return
+
+    top_orgs = (
+        paths.groupby(["ein", "client_name"], dropna=False)["dollars"]
+        .sum()
+        .nlargest(max_orgs)
+        .reset_index()[["ein", "client_name"]]
+    )
+    paths = paths.merge(top_orgs, on=["ein", "client_name"], how="inner")
+    top_areas = paths.groupby("policy_area")["dollars"].sum().nlargest(max_areas).index
+    paths = paths[paths["policy_area"].isin(top_areas)]
+    top_bill_ids = paths.groupby("bill_id")["dollars"].sum().nlargest(max_bills).index
+    paths = paths[paths["bill_id"].isin(top_bill_ids)]
+    if paths.empty:
+        st.info("The selected limits left no linked paths to display.")
+        return
+
+    org_nodes = {
+        f"org:{row.ein}": f"{row.client_name or row.ein}"
+        for row in paths[["ein", "client_name"]].drop_duplicates().itertuples()
+    }
+    area_nodes = {
+        f"area:{area}": area for area in sorted(paths["policy_area"].unique())
+    }
+    bill_nodes = {
+        f"bill:{row.bill_id}": f"{row.bill_id} - {(row.title or '')[:55]}"
+        for row in paths[["bill_id", "title"]].drop_duplicates().itertuples()
+    }
+    node_keys = list(org_nodes) + list(area_nodes) + list(bill_nodes)
+    labels = list(org_nodes.values()) + list(area_nodes.values()) + list(bill_nodes.values())
+    node_index = {key: i for i, key in enumerate(node_keys)}
+
+    org_area = (
+        paths.groupby(["ein", "policy_area"], dropna=False)["dollars"]
+        .sum()
+        .reset_index()
+    )
+    area_bill = (
+        paths.groupby(["policy_area", "bill_id"], dropna=False)["dollars"]
+        .sum()
+        .reset_index()
+    )
+    sources = (
+        [node_index[f"org:{row.ein}"] for row in org_area.itertuples()]
+        + [node_index[f"area:{row.policy_area}"] for row in area_bill.itertuples()]
+    )
+    targets = (
+        [node_index[f"area:{row.policy_area}"] for row in org_area.itertuples()]
+        + [node_index[f"bill:{row.bill_id}"] for row in area_bill.itertuples()]
+    )
+    values = (
+        [float(row.dollars or 0) for row in org_area.itertuples()]
+        + [float(row.dollars or 0) for row in area_bill.itertuples()]
+    )
+    fig = go.Figure(go.Sankey(
+        arrangement="snap",
+        node=dict(
+            pad=15,
+            thickness=18,
+            label=labels,
+            color=(
+                ["#d62728"] * len(org_nodes)
+                + ["#1f77b4"] * len(area_nodes)
+                + ["#2ca02c"] * len(bill_nodes)
+            ),
+            line=dict(color="white", width=0.5),
+        ),
+        link=dict(source=sources, target=targets, value=values),
+    ))
+    fig.update_layout(height=750, margin=dict(l=0, r=0, t=10, b=10))
+    st.plotly_chart(fig, use_container_width=True)
+    st.caption(
+        f"{paths['ein'].nunique()} organizations, {paths['policy_area'].nunique()} "
+        f"policy areas, and {paths['bill_id'].nunique()} bills shown. "
+        "Red = organizations; blue = policy areas; green = bills."
+    )
+    st.dataframe(
+        paths.sort_values("dollars", ascending=False),
+        use_container_width=True,
+        hide_index=True,
+    )
 
 
 # --- Org -> Policy links -----------------------------------------------------
@@ -621,6 +807,8 @@ PAGES = {
     "Super PAC spending": page_committees,
     "Lobbying \u2192 Bills": page_lobbying,
     "Lobbying \u2194 Bill alignment": page_alignment,
+    "Figure 3 - What they lobby on": page_figure_three,
+    "Figure 4 - Organization to legislation": page_figure_four,
     "Org → Policy links": page_policy_links,
 }
 PAGES[page]()

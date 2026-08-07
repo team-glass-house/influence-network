@@ -163,7 +163,8 @@ page = st.sidebar.radio(
     "View",
     ["Overview", "Organizations (IRS 990)", "Grant network",
      "Shared-personnel network", "Politically active orgs", "Super PAC spending",
-     "Lobbying \u2192 Bills", "Org \u2192 Policy links"],
+     "Lobbying \u2192 Bills",
+     "Org \u2192 Policy links"],
 )
 st.sidebar.caption(f"Source: {PARQUET_BASE}")
 
