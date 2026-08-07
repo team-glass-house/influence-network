@@ -84,10 +84,9 @@ def page_overview() -> None:
     with left:
         st.subheader("990 filings by tax year")
         df = run_query("""
-            SELECT tax_year, COUNT(*) AS filings
-            FROM irs990_filings
-            WHERE tax_year BETWEEN 2000 AND 2025
-            GROUP BY tax_year ORDER BY tax_year
+            SELECT tax_year, filings
+            FROM dash_filings_by_year
+            ORDER BY tax_year
         """)
         if not df.empty:
             st.plotly_chart(px.bar(df, x="tax_year", y="filings"), use_container_width=True)
@@ -187,7 +186,7 @@ def page_organizations() -> None:
     with col2:
         st.subheader("Lobbying linked to this org")
         links = run_query("""
-            SELECT filing_year, client_name, bill_id, title, reported_lobbying_amount
+            SELECT DISTINCT filing_year, client_name, bill_id, title, reported_lobbying_amount
             FROM organization_policy_links
             WHERE ein = ?
             ORDER BY reported_lobbying_amount DESC LIMIT 200
@@ -229,12 +228,8 @@ def page_lobbying() -> None:
 
     with tab1:
         df = run_query("""
-            SELECT bill_id, title, policy_area,
-                   COUNT(DISTINCT filing_uuid) AS lobbying_filings,
-                   COUNT(DISTINCT client_name) AS distinct_clients
-            FROM lobbying_bill_facts
-            WHERE bill_id IS NOT NULL
-            GROUP BY bill_id, title, policy_area
+            SELECT bill_id, title, policy_area, lobbying_filings, distinct_clients
+            FROM dash_most_lobbied_bills
             ORDER BY lobbying_filings DESC LIMIT 200
         """)
         st.dataframe(df, use_container_width=True, hide_index=True)
@@ -243,7 +238,7 @@ def page_lobbying() -> None:
         client = st.text_input("Client name contains", "")
         if client:
             df = run_query("""
-                SELECT filing_year, client_name, bill_id, title, policy_area,
+                SELECT DISTINCT filing_year, client_name, bill_id, title, policy_area,
                        reported_lobbying_amount
                 FROM lobbying_bill_facts
                 WHERE client_name LIKE ? AND bill_id IS NOT NULL
@@ -294,13 +289,13 @@ def page_network() -> None:
     q = query.strip()
     if q.isdigit():
         matches = run_query(
-            "SELECT ein, current_name FROM organizations WHERE ein = ? LIMIT 50", (q,)
+            "SELECT ein, current_name FROM organizations WHERE ein = ? LIMIT 1000", (q,)
         )
     else:
         like = f"%{q}%"
         matches = run_query(
             "SELECT ein, current_name FROM organizations "
-            "WHERE current_name LIKE ? ORDER BY current_name LIMIT 50",
+            "WHERE current_name LIKE ? ORDER BY current_name LIMIT 1000",
             (like,),
         )
     if matches.empty:
@@ -414,13 +409,18 @@ def page_people_network() -> None:
         st.info("Search for an organization to map its shared-personnel connections.")
         return
 
-    like = f"%{query.strip()}%"
-    matches = run_query("""
-        SELECT ein, filer_name, COUNT(*) AS filings
-        FROM irs990_filings
-        WHERE filer_name LIKE ? OR ein LIKE ?
-        GROUP BY ein, filer_name ORDER BY filings DESC LIMIT 50
-    """, (like, like))
+    q = query.strip()
+    if q.isdigit():
+        matches = run_query(
+            "SELECT ein, current_name AS filer_name FROM organizations "
+            "WHERE ein = ? LIMIT 50", (q,)
+        )
+    else:
+        matches = run_query(
+            "SELECT ein, current_name AS filer_name FROM organizations "
+            "WHERE current_name LIKE ? ORDER BY current_name LIMIT 50",
+            (f"%{q}%",),
+        )
     if matches.empty:
         st.warning("No organizations found.")
         return
@@ -445,18 +445,23 @@ def page_people_network() -> None:
         st.warning("No named officers/directors found for this organization.")
         return
 
-    connections: dict[str, dict] = {}
-    for name in people["person_name"].tolist():
-        others = run_query("""
-            SELECT DISTINCT f.ein, f.filer_name
+    names = people["person_name"].tolist()
+    ph = ",".join("?" * len(names))
+    others = run_query(f"""
+        WITH matched AS (
+            SELECT p.person_name, f.ein, f.filer_name,
+                   ROW_NUMBER() OVER (PARTITION BY p.person_name ORDER BY f.ein) AS rn
             FROM irs990_filing_people p
             JOIN irs990_filings f USING (filing_id)
-            WHERE p.person_name = ? AND f.ein <> ?
-            LIMIT 8
-        """, (name, center))
-        for _, o in others.iterrows():
-            rec = connections.setdefault(o["ein"], {"name": o["filer_name"], "people": set()})
-            rec["people"].add(name)
+            WHERE p.person_name IN ({ph}) AND f.ein <> ?
+        )
+        SELECT person_name, ein, filer_name FROM matched WHERE rn <= 8
+    """, tuple(names) + (center,))
+
+    connections: dict[str, dict] = {}
+    for _, o in others.iterrows():
+        rec = connections.setdefault(o["ein"], {"name": o["filer_name"], "people": set()})
+        rec["people"].add(o["person_name"])
 
     if not connections:
         st.info("No other organizations share officers/directors with this org "
@@ -515,23 +520,17 @@ def page_political() -> None:
     only_flagged = st.checkbox("Only orgs flagged for political activity", value=False)
     limit = st.slider("How many organizations", 20, 300, 100)
 
-    df = run_query("""
-        SELECT f.ein, f.filer_name,
-               MAX(f.political_activity_flag) AS political_flag,
-               MAX(f.tax_year) AS latest_year,
-               SUM(COALESCE(l.total_lobbying_expenditures_amt,
-                            l.total_lobbying_expend_amt, 0)) AS lobbying_spend,
-               COUNT(*) AS filings
-        FROM irs990_filing_lobbying l
-        JOIN irs990_filings f USING (filing_id)
-        GROUP BY f.ein, f.filer_name
-        HAVING lobbying_spend > 0
+    where = "WHERE lobbying_spend > 0"
+    if only_flagged:
+        where += " AND political_flag = 1"
+    df = run_query(f"""
+        SELECT ein, filer_name, political_flag, latest_year, lobbying_spend, filings
+        FROM dash_political_orgs
+        {where}
         ORDER BY lobbying_spend DESC
         LIMIT ?
-    """, (limit if not only_flagged else limit * 4,))
+    """, (limit,))
 
-    if only_flagged:
-        df = df[df["political_flag"] == 1].head(limit)
     if df.empty:
         st.warning("No matching organizations.")
         return
