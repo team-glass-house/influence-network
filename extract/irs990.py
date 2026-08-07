@@ -30,7 +30,7 @@ from .entities import normalize_organization_name
 
 logger = logging.getLogger(__name__)
 
-PARSER_VERSION = "irs990-v5"  # v5: total_assets for 990/990EZ; transparency index fields
+PARSER_VERSION = "irs990-v6"  # v6: filer mailing address (line1/line2/city/state/zip)
 
 
 def _child(node: etree._Element | None, tag: str) -> etree._Element | None:
@@ -93,6 +93,11 @@ def _parse_tree(tree: "etree._ElementTree") -> dict[str, Any]:
     tax_year = _text(return_header, "TaxYr") or _text(return_header, "TaxYear")
 
     name = None
+    filer_address_line1 = None
+    filer_address_line2 = None
+    filer_city = None
+    filer_state = None
+    filer_zip = None
     if return_header is not None:
         filer = _child(return_header, "Filer")
         if filer is not None:
@@ -100,6 +105,27 @@ def _parse_tree(tree: "etree._ElementTree") -> dict[str, Any]:
             name = (
                 _text(filer, "BusinessName", "BusinessNameLine1Txt")
                 or _text(filer, "BusinessName", "BusinessNameLine1")
+            )
+            # Mailing address: domestic USAddress or ForeignAddress.
+            filer_address_line1 = (
+                _text(filer, "USAddress", "AddressLine1Txt")
+                or _text(filer, "ForeignAddress", "AddressLine1Txt")
+            )
+            filer_address_line2 = (
+                _text(filer, "USAddress", "AddressLine2Txt")
+                or _text(filer, "ForeignAddress", "AddressLine2Txt")
+            )
+            filer_city = (
+                _text(filer, "USAddress", "CityNm")
+                or _text(filer, "ForeignAddress", "CityNm")
+            )
+            filer_state = (
+                _text(filer, "USAddress", "StateAbbreviationCd")
+                or _text(filer, "ForeignAddress", "ProvinceOrStateNm")
+            )
+            filer_zip = (
+                _text(filer, "USAddress", "ZIPCd")
+                or _text(filer, "ForeignAddress", "ForeignPostalCd")
             )
 
     form = None
@@ -135,6 +161,11 @@ def _parse_tree(tree: "etree._ElementTree") -> dict[str, Any]:
         "fundraising_expenses": None,
         "political_activity_flag": None,
         "mission": None,
+        "filer_address_line1": filer_address_line1,
+        "filer_address_line2": filer_address_line2,
+        "filer_city": filer_city,
+        "filer_state": filer_state,
+        "filer_zip": filer_zip,
         "raw_json": None,
     }
     grants: list[dict[str, Any]] = []
@@ -874,6 +905,11 @@ def _write_filing_v2(conn: Any, parsed: dict[str, Any], source: dict[str, Any]) 
         "fundraising_expenses": filing.get("fundraising_expenses"),
         "political_activity_flag": filing["political_activity_flag"],
         "mission": filing["mission"],
+        "filer_address_line1": filing.get("filer_address_line1"),
+        "filer_address_line2": filing.get("filer_address_line2"),
+        "filer_city": filing.get("filer_city"),
+        "filer_state": filing.get("filer_state"),
+        "filer_zip": filing.get("filer_zip"),
     }
     upsert(conn, "irs990_filings", filing_row)
     filing_id = conn.execute(
