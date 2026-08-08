@@ -91,6 +91,11 @@ with the current parser version when an existing database needs the address
 fields refreshed. The filing-scoped `doing_business_as_name` field preserves
 the optional DBA name separately from the legal `filer_name`.
 
+The parser version is stored per source object. A parser-version change makes
+the next `irs990` directory or ZIP ingestion reparse previously successful XML
+files, so newly added fields such as `program_services_amt` and
+`management_and_general_amt` are populated without changing the source files.
+
 The older `orgs` and `org_*` tables remain for compatibility with early
 notebooks, but should not be used for multi-year IRS analysis. Use
 `irs990_filings` as the starting point, then join schedule tables on

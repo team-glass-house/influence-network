@@ -203,6 +203,7 @@ CREATE TABLE IF NOT EXISTS irs990_filings (
     total_revenue            REAL,
     total_expenses           REAL,
     total_assets             REAL,          -- EOY total assets (990/990EZ/990PF)
+    grants_and_contributions REAL,         -- Part I line 9
     voting_members_governing_body   INTEGER, -- VotingMembersGoverningBodyCnt
     voting_members_independent      INTEGER, -- VotingMembersIndependentCnt
     total_volunteers                INTEGER, -- TotalVolunteersCnt
@@ -210,6 +211,8 @@ CREATE TABLE IF NOT EXISTS irs990_filings (
     total_salaries                  REAL,    -- CYSalariesCompEmpBnftPaidAmt
     unrestricted_net_assets_eoy     REAL,    -- NoDonorRestrictionNetAssetsGrp/EOYAmt (new) or UnrestrictedNetAssetsGrp/EOYAmt (old)
     fundraising_expenses            REAL,    -- CYTotalProfFndrsngExpnsAmt
+    program_services_amt            REAL,    -- TotalFunctionalExpensesGrp/ProgramServicesAmt
+    management_and_general_amt      REAL,    -- TotalFunctionalExpensesGrp/ManagementAndGeneralAmt
     filer_address_line1      TEXT,    -- ReturnHeader/Filer/USAddress AddressLine1Txt (or ForeignAddress)
     filer_address_line2      TEXT,    -- AddressLine2Txt
     filer_zip                TEXT,    -- ZIPCd (or ForeignPostalCd)
@@ -399,6 +402,7 @@ def init_db(db_path: Path | None = None) -> None:
             ("filer_state",                   "TEXT"),
             ("filer_zip_code",                "TEXT"),
             ("total_assets",                    "REAL"),
+            ("grants_and_contributions",        "REAL"),
             ("voting_members_governing_body",   "INTEGER"),
             ("voting_members_independent",      "INTEGER"),
             ("total_volunteers",                "INTEGER"),
@@ -406,6 +410,8 @@ def init_db(db_path: Path | None = None) -> None:
             ("total_salaries",                  "REAL"),
             ("unrestricted_net_assets_eoy",     "REAL"),
             ("fundraising_expenses",            "REAL"),
+            ("program_services_amt",            "REAL"),
+            ("management_and_general_amt",      "REAL"),
         ):
             if col not in filings_columns:
                 conn.execute(f"ALTER TABLE irs990_filings ADD COLUMN {col} {defn}")

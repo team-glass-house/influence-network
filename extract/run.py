@@ -45,6 +45,16 @@ def main(argv: list[str] | None = None) -> int:
     p_irs = sub.add_parser("irs990", help="Parse IRS 990 XML files in a folder")
     p_irs.add_argument("--dir", required=True)
     p_irs.add_argument("--pattern", default="*.xml")
+    p_reingest = sub.add_parser(
+        "reingest-irs990",
+        help="Refresh available IRS 990 source objects with the current parser",
+    )
+    p_reingest.add_argument("--root", type=Path, default=Path("."))
+    p_reingest.add_argument("--batch-size", type=int, default=250)
+    p_reingest.add_argument("--limit", type=int, default=None)
+    p_reingest.add_argument("--path-prefix", default=None)
+    p_reingest.add_argument("--eligible-only", action="store_true")
+    p_reingest.add_argument("--force", action="store_true")
     p_refresh = sub.add_parser(
         "refresh-analysis",
         help="Sync entity observations, generate candidates, and rebuild views",
@@ -101,6 +111,20 @@ def main(argv: list[str] | None = None) -> int:
         from .irs990 import ingest_990_directory
         n = ingest_990_directory(args.dir, args.pattern, db_path=args.db)
         print(f"Ingested {n} 990 files.")
+        return 0
+
+    if args.command == "reingest-irs990":
+        from .irs990 import reingest_990_sources
+        result = reingest_990_sources(
+            root=args.root,
+            db_path=args.db,
+            batch_size=args.batch_size,
+            limit=args.limit,
+            path_prefix=args.path_prefix,
+            eligible_only=args.eligible_only,
+            force=args.force,
+        )
+        print(result)
         return 0
 
     if args.command == "refresh-analysis":
