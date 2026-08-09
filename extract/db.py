@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS members (
 CREATE TABLE IF NOT EXISTS committees (
     committee_id              TEXT PRIMARY KEY,
     name                      TEXT,
+    state                     TEXT,
     committee_type            TEXT,
     designation               TEXT,
     party                     TEXT,
@@ -106,6 +107,11 @@ CREATE INDEX IF NOT EXISTS idx_disb_committee ON fec_disbursements(committee_id)
 CREATE TABLE IF NOT EXISTS lda_filings (
     filing_uuid    TEXT PRIMARY KEY,
     client_name    TEXT,
+    client_id      TEXT,
+    client_address TEXT,
+    client_city    TEXT,
+    client_state   TEXT,
+    client_zip_code TEXT,
     registrant_name TEXT,
     filing_year    INTEGER,
     filing_period  TEXT,
@@ -130,7 +136,10 @@ CREATE INDEX IF NOT EXISTS idx_lda_act_filing ON lda_lobbying_activities(filing_
 CREATE TABLE IF NOT EXISTS irs_master (
     ein             TEXT PRIMARY KEY,
     name            TEXT,
+    address         TEXT,
+    city            TEXT,
     state           TEXT,
+    zip_code        TEXT,
     ntee_code       TEXT,        -- e.g. "A69Z" -- mission sector classification
     subsection_code TEXT,        -- IRS 501(c) subsection number, e.g. "3", "4", "6"
     foundation_code TEXT,        -- IRS foundation type code
@@ -145,17 +154,6 @@ CREATE TABLE IF NOT EXISTS irs_master (
 );
 CREATE INDEX IF NOT EXISTS idx_irs_master_ntee ON irs_master(ntee_code);
 CREATE INDEX IF NOT EXISTS idx_irs_master_state ON irs_master(state);
-
--- ===================== OpenSecrets Dark Money Crosswalk =====================
--- Source: drive/Dark Money Dataset Investigation/upd.crp_ein_list.csv
--- 371 EINs flagged by OpenSecrets as dark money / politically active nonprofits.
-CREATE TABLE IF NOT EXISTS crp_dark_money (
-    ein         TEXT NOT NULL,
-    crp_name    TEXT,   -- name used by OpenSecrets CRP database
-    org_name    TEXT,   -- IRS name on file
-    year        INTEGER,
-    PRIMARY KEY (ein, year)
-);
 
 """
 
@@ -196,6 +194,11 @@ CREATE TABLE IF NOT EXISTS irs990_filings (
     return_timestamp         TEXT,
     form_type                TEXT,
     filer_name               TEXT,
+    doing_business_as_name   TEXT,
+    filer_address             TEXT,
+    filer_city                TEXT,
+    filer_state               TEXT,
+    filer_zip_code             TEXT,
     exempt_organization_type TEXT,
     total_revenue            REAL,
     total_expenses           REAL,
@@ -209,8 +212,6 @@ CREATE TABLE IF NOT EXISTS irs990_filings (
     fundraising_expenses            REAL,    -- CYTotalProfFndrsngExpnsAmt
     filer_address_line1      TEXT,    -- ReturnHeader/Filer/USAddress AddressLine1Txt (or ForeignAddress)
     filer_address_line2      TEXT,    -- AddressLine2Txt
-    filer_city               TEXT,    -- CityNm
-    filer_state              TEXT,    -- StateAbbreviationCd (or ProvinceOrStateNm for foreign)
     filer_zip                TEXT,    -- ZIPCd (or ForeignPostalCd)
     political_activity_flag  INTEGER,
     mission                  TEXT,
@@ -257,7 +258,7 @@ CREATE TABLE IF NOT EXISTS irs990_filing_lobbying (
     grassroots_ceiling_amt REAL, total_lobbying_expenditures_amt REAL,
     direct_contact_legislators_amt REAL, other_lobbying_activities_amt REAL,
     lobbying_activity_types TEXT, nondeductible_lobbying_pltcl_amt REAL,
-    taxable_amt REAL
+    taxable_amt REAL, fees_for_services_lobbying_amt REAL
 );
 
 CREATE TABLE IF NOT EXISTS irs990_filing_527_orgs (
@@ -294,6 +295,10 @@ CREATE TABLE IF NOT EXISTS entity_observations (
     native_identifier TEXT,
     observed_name TEXT,
     normalized_name TEXT,
+    address TEXT,
+    city TEXT,
+    state TEXT,
+    zip_code TEXT,
     irs_filing_id INTEGER REFERENCES irs990_filings(filing_id),
     observed_at TEXT,
     UNIQUE(source_system, source_record_id, subject_role)
@@ -365,6 +370,7 @@ def init_db(db_path: Path | None = None) -> None:
         # Add parsed financial columns to committees for older databases.
         committee_columns = {row["name"] for row in conn.execute("PRAGMA table_info(committees)")}
         for column, definition in (
+            ("state", "TEXT"),
             ("cycle", "INTEGER"),
             ("total_receipts", "REAL"),
             ("total_disbursements", "REAL"),
@@ -387,6 +393,11 @@ def init_db(db_path: Path | None = None) -> None:
         # Add new columns to irs990_filings (schema migrations for existing databases).
         filings_columns = {row["name"] for row in conn.execute("PRAGMA table_info(irs990_filings)")}
         for col, defn in (
+            ("filer_address",                 "TEXT"),
+            ("doing_business_as_name",        "TEXT"),
+            ("filer_city",                    "TEXT"),
+            ("filer_state",                   "TEXT"),
+            ("filer_zip_code",                "TEXT"),
             ("total_assets",                    "REAL"),
             ("voting_members_governing_body",   "INTEGER"),
             ("voting_members_independent",      "INTEGER"),
@@ -399,21 +410,58 @@ def init_db(db_path: Path | None = None) -> None:
             if col not in filings_columns:
                 conn.execute(f"ALTER TABLE irs990_filings ADD COLUMN {col} {defn}")
 
-        # Create irs_master and crp_dark_money if they do not exist yet.
+        lda_columns = {row["name"] for row in conn.execute("PRAGMA table_info(lda_filings)")}
+        for col, defn in (
+            ("client_id", "TEXT"),
+            ("client_address", "TEXT"),
+            ("client_city", "TEXT"),
+            ("client_state", "TEXT"),
+            ("client_zip_code", "TEXT"),
+        ):
+            if col not in lda_columns:
+                conn.execute(f"ALTER TABLE lda_filings ADD COLUMN {col} {defn}")
+
+        observation_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(entity_observations)")
+        }
+        for col, defn in (
+            ("address", "TEXT"),
+            ("city", "TEXT"),
+            ("state", "TEXT"),
+            ("zip_code", "TEXT"),
+        ):
+            if col not in observation_columns:
+                conn.execute(f"ALTER TABLE entity_observations ADD COLUMN {col} {defn}")
+
+        lobbying_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(irs990_filing_lobbying)")
+        }
+        if "fees_for_services_lobbying_amt" not in lobbying_columns:
+            conn.execute(
+                "ALTER TABLE irs990_filing_lobbying "
+                "ADD COLUMN fees_for_services_lobbying_amt REAL"
+            )
+
+        # Create irs_master if it does not exist yet.
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS irs_master (
-                ein TEXT PRIMARY KEY, name TEXT, state TEXT, ntee_code TEXT,
+                ein TEXT PRIMARY KEY, name TEXT, address TEXT, city TEXT, state TEXT,
+                zip_code TEXT, ntee_code TEXT,
                 subsection_code TEXT, foundation_code TEXT, status_code TEXT,
                 ruling_date TEXT, asset_code TEXT, income_code TEXT,
                 asset_amt REAL, income_amt REAL, revenue_amt REAL, tax_period TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_irs_master_ntee ON irs_master(ntee_code);
             CREATE INDEX IF NOT EXISTS idx_irs_master_state ON irs_master(state);
-            CREATE TABLE IF NOT EXISTS crp_dark_money (
-                ein TEXT NOT NULL, crp_name TEXT, org_name TEXT, year INTEGER,
-                PRIMARY KEY (ein, year)
-            );
         """)
+        master_columns = {row["name"] for row in conn.execute("PRAGMA table_info(irs_master)")}
+        for col, defn in (
+            ("address", "TEXT"),
+            ("city", "TEXT"),
+            ("zip_code", "TEXT"),
+        ):
+            if col not in master_columns:
+                conn.execute(f"ALTER TABLE irs_master ADD COLUMN {col} {defn}")
 
 
 def _coerce(value: Any) -> Any:

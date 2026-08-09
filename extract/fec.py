@@ -86,6 +86,7 @@ class FecCollector:
                 upsert(conn, "committees", {
                     "committee_id": c.get("committee_id"),
                     "name": c.get("name"),
+                    "state": c.get("state") or c.get("committee_state"),
                     "committee_type": c.get("committee_type"),
                     "designation": c.get("designation"),
                     "party": c.get("party"),
@@ -116,6 +117,7 @@ class FecCollector:
                 upsert(conn, "committees", {
                     "committee_id": cid,
                     "name": row.get("committee_name"),
+                    "state": row.get("committee_state"),
                     "committee_type": committee_type,
                     "designation": None,
                     "party": row.get("party"),

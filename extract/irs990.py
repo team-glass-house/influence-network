@@ -30,7 +30,7 @@ from .entities import normalize_organization_name
 
 logger = logging.getLogger(__name__)
 
-PARSER_VERSION = "irs990-v6"  # v6: filer mailing address (line1/line2/city/state/zip)
+PARSER_VERSION = "irs990-v10"  # v10: preserve mailing and doing-business-as fields
 
 
 def _child(node: etree._Element | None, tag: str) -> etree._Element | None:
@@ -51,6 +51,77 @@ def _text(node: etree._Element | None, *tags: str) -> str | None:
     if cur is None or cur.text is None:
         return None
     return cur.text.strip()
+
+
+def _business_name(
+    node: etree._Element | None,
+    container_tag: str = "BusinessName",
+) -> str | None:
+    """Return all populated business-name lines in source order."""
+    business_name = _child(node, container_tag)
+    if business_name is None:
+        return None
+
+    lines = []
+    for line_tags in (
+        ("BusinessNameLine1Txt", "BusinessNameLine1"),
+        ("BusinessNameLine2Txt", "BusinessNameLine2"),
+    ):
+        for tag in line_tags:
+            value = _text(business_name, tag)
+            if value:
+                lines.append(value)
+                break
+    return " ".join(lines) or None
+
+
+def _address_fields(node: etree._Element | None) -> dict[str, str | None]:
+    """Extract the filer address across common 990 header variants."""
+    address = _child(node, "USAddress")
+    if address is None:
+        address = _child(node, "ForeignAddress")
+    if address is None:
+        address = _child(node, "Address")
+    return {
+        "address": (
+            _text(address, "AddressLine1Txt")
+            or _text(address, "AddressLine1")
+        ),
+        "address_line2": (
+            _text(address, "AddressLine2Txt")
+            or _text(address, "AddressLine2")
+        ),
+        "city": _text(address, "CityNm") or _text(address, "City"),
+        "state": (
+            _text(address, "StateAbbreviationCd")
+            or _text(address, "ProvinceOrStateNm")
+            or _text(address, "State")
+        ),
+        "zip_code": (
+            _text(address, "ZIPCd")
+            or _text(address, "ForeignPostalCd")
+            or _text(address, "ZIPCode")
+        ),
+        "filer_address_line1": (
+            _text(address, "AddressLine1Txt")
+            or _text(address, "AddressLine1")
+        ),
+        "filer_address_line2": (
+            _text(address, "AddressLine2Txt")
+            or _text(address, "AddressLine2")
+        ),
+        "filer_city": _text(address, "CityNm") or _text(address, "City"),
+        "filer_state": (
+            _text(address, "StateAbbreviationCd")
+            or _text(address, "ProvinceOrStateNm")
+            or _text(address, "State")
+        ),
+        "filer_zip": (
+            _text(address, "ZIPCd")
+            or _text(address, "ForeignPostalCd")
+            or _text(address, "ZIPCode")
+        ),
+    }
 
 
 def _attribute(node: etree._Element | None, tag: str, attribute: str) -> str | None:
@@ -93,40 +164,13 @@ def _parse_tree(tree: "etree._ElementTree") -> dict[str, Any]:
     tax_year = _text(return_header, "TaxYr") or _text(return_header, "TaxYear")
 
     name = None
-    filer_address_line1 = None
-    filer_address_line2 = None
-    filer_city = None
-    filer_state = None
-    filer_zip = None
+    doing_business_as_name = None
+    filer_address: dict[str, str | None] = {}
     if return_header is not None:
         filer = _child(return_header, "Filer")
         if filer is not None:
-            # BusinessName/BusinessNameLine1Txt (newer) or .../BusinessNameLine1 (older)
-            name = (
-                _text(filer, "BusinessName", "BusinessNameLine1Txt")
-                or _text(filer, "BusinessName", "BusinessNameLine1")
-            )
-            # Mailing address: domestic USAddress or ForeignAddress.
-            filer_address_line1 = (
-                _text(filer, "USAddress", "AddressLine1Txt")
-                or _text(filer, "ForeignAddress", "AddressLine1Txt")
-            )
-            filer_address_line2 = (
-                _text(filer, "USAddress", "AddressLine2Txt")
-                or _text(filer, "ForeignAddress", "AddressLine2Txt")
-            )
-            filer_city = (
-                _text(filer, "USAddress", "CityNm")
-                or _text(filer, "ForeignAddress", "CityNm")
-            )
-            filer_state = (
-                _text(filer, "USAddress", "StateAbbreviationCd")
-                or _text(filer, "ForeignAddress", "ProvinceOrStateNm")
-            )
-            filer_zip = (
-                _text(filer, "USAddress", "ZIPCd")
-                or _text(filer, "ForeignAddress", "ForeignPostalCd")
-            )
+            name = _business_name(filer)
+            filer_address = _address_fields(filer)
 
     form = None
     form_pf = None
@@ -142,10 +186,13 @@ def _parse_tree(tree: "etree._ElementTree") -> dict[str, Any]:
         )
         if filing is not None:
             form_type = etree.QName(filing).localname.removeprefix("IRS")
+            doing_business_as_name = _business_name(filing, "DoingBusinessAsName")
 
     org: dict[str, Any] = {
         "ein": ein,
         "name": name,
+        "doing_business_as_name": doing_business_as_name,
+        **filer_address,
         "tax_year": int(tax_year) if tax_year and tax_year.isdigit() else None,
         "form_type": form_type,
         "exempt_organization_type": None,
@@ -161,11 +208,6 @@ def _parse_tree(tree: "etree._ElementTree") -> dict[str, Any]:
         "fundraising_expenses": None,
         "political_activity_flag": None,
         "mission": None,
-        "filer_address_line1": filer_address_line1,
-        "filer_address_line2": filer_address_line2,
-        "filer_city": filer_city,
-        "filer_state": filer_state,
-        "filer_zip": filer_zip,
         "raw_json": None,
     }
     grants: list[dict[str, Any]] = []
@@ -234,7 +276,9 @@ def _parse_tree(tree: "etree._ElementTree") -> dict[str, Any]:
         people.extend(_parse_officers(form, org["ein"], org["tax_year"]))
         contractors.extend(_parse_contractors(form, org["ein"], org["tax_year"]))
         grants.extend(_parse_grants(return_data, org["ein"], org["tax_year"]))
-        lobbying = _parse_schedule_c(return_data, org["ein"], org["tax_year"])
+        lobbying = _parse_schedule_c(
+            return_data, org["ein"], org["tax_year"], form=form
+        )
         schedule_r = _parse_schedule_r(return_data, org["ein"], org["tax_year"])
         if schedule_r is not None:
             related_orgs, related_org_transactions = schedule_r
@@ -249,7 +293,11 @@ def _parse_tree(tree: "etree._ElementTree") -> dict[str, Any]:
             lobbying, _527_orgs = lobbying
             lobbying_spend = sum(
                 lobbying.get(key) or 0.0
-                for key in ("total_lobbying_expend_amt", "total_lobbying_expenditures_amt")
+                for key in (
+                    "total_lobbying_expend_amt",
+                    "total_lobbying_expenditures_amt",
+                    "fees_for_services_lobbying_amt",
+                )
             )
         else:
             _527_orgs = None
@@ -572,7 +620,7 @@ _TRANSACTION_TYPE_CODES = frozenset("ABCDEFGHIJKLMNOPQRS")
 
 
 def _parse_schedule_c(return_data: etree._Element, ein: str | None,
-                      tax_year: int | None
+                      tax_year: int | None, form: etree._Element | None = None
                       ) -> tuple[dict[str, Any], list[dict[str, Any]] | None] | None:
     """Extract lobbying-expenditure data (Schedule C) for one return.
 
@@ -586,9 +634,18 @@ def _parse_schedule_c(return_data: etree._Element, ein: str | None,
         and political dues allocations.
     Returns None if the filer did not attach Schedule C at all.
     """
+    fees_for_services_lobbying_amt = _float(
+        _text(form, "FeesForServicesLobbyingGrp", "TotalAmt")
+    )
     sched_c = _child(return_data, "IRS990ScheduleC")
     if sched_c is None:
-        return None
+        if fees_for_services_lobbying_amt is None:
+            return None
+        return {
+            "ein": ein,
+            "tax_year": tax_year,
+            "fees_for_services_lobbying_amt": fees_for_services_lobbying_amt,
+        }, None
 
     row: dict[str, Any] = {
         "ein": ein,
@@ -619,6 +676,8 @@ def _parse_schedule_c(return_data: etree._Element, ein: str | None,
             _text(sched_c, "NonDeductibleLbbyngPltclTotAmt")
         ),
         "taxable_amt": _float(_text(sched_c, "TaxableAmt")),
+        # Part IX, line 25: lobbying fees included in functional expenses.
+        "fees_for_services_lobbying_amt": fees_for_services_lobbying_amt,
         "raw_json": None,
     }
 
@@ -892,6 +951,11 @@ def _write_filing_v2(conn: Any, parsed: dict[str, Any], source: dict[str, Any]) 
         "return_timestamp": filing["return_timestamp"],
         "form_type": filing["form_type"],
         "filer_name": filing["name"],
+        "doing_business_as_name": filing.get("doing_business_as_name"),
+        "filer_address": filing.get("address") or filing.get("filer_address_line1"),
+        "filer_city": filing.get("city") or filing.get("filer_city"),
+        "filer_state": filing.get("state") or filing.get("filer_state"),
+        "filer_zip_code": filing.get("zip_code") or filing.get("filer_zip"),
         "exempt_organization_type": filing["exempt_organization_type"],
         "total_revenue": filing["total_revenue"],
         "total_expenses": filing["total_expenses"],
@@ -942,6 +1006,10 @@ def _write_filing_v2(conn: Any, parsed: dict[str, Any], source: dict[str, Any]) 
         "native_identifier": ein,
         "observed_name": filing["name"],
         "normalized_name": normalize_organization_name(filing["name"]),
+        "address": filing.get("address"),
+        "city": filing.get("city"),
+        "state": filing.get("state"),
+        "zip_code": filing.get("zip_code"),
         "irs_filing_id": filing_id,
         "observed_at": filing["return_timestamp"],
     })
