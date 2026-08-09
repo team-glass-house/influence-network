@@ -30,7 +30,7 @@ from .entities import normalize_organization_name
 
 logger = logging.getLogger(__name__)
 
-PARSER_VERSION = "irs990-v9"  # v9: preserve matching and mailing address fields
+PARSER_VERSION = "irs990-v10"  # v10: preserve mailing and doing-business-as fields
 
 
 def _child(node: etree._Element | None, tag: str) -> etree._Element | None:
@@ -53,9 +53,12 @@ def _text(node: etree._Element | None, *tags: str) -> str | None:
     return cur.text.strip()
 
 
-def _business_name(node: etree._Element | None) -> str | None:
-    """Return all populated filer business-name lines in source order."""
-    business_name = _child(node, "BusinessName")
+def _business_name(
+    node: etree._Element | None,
+    container_tag: str = "BusinessName",
+) -> str | None:
+    """Return all populated business-name lines in source order."""
+    business_name = _child(node, container_tag)
     if business_name is None:
         return None
 
@@ -161,6 +164,7 @@ def _parse_tree(tree: "etree._ElementTree") -> dict[str, Any]:
     tax_year = _text(return_header, "TaxYr") or _text(return_header, "TaxYear")
 
     name = None
+    doing_business_as_name = None
     filer_address: dict[str, str | None] = {}
     if return_header is not None:
         filer = _child(return_header, "Filer")
@@ -182,10 +186,12 @@ def _parse_tree(tree: "etree._ElementTree") -> dict[str, Any]:
         )
         if filing is not None:
             form_type = etree.QName(filing).localname.removeprefix("IRS")
+            doing_business_as_name = _business_name(filing, "DoingBusinessAsName")
 
     org: dict[str, Any] = {
         "ein": ein,
         "name": name,
+        "doing_business_as_name": doing_business_as_name,
         **filer_address,
         "tax_year": int(tax_year) if tax_year and tax_year.isdigit() else None,
         "form_type": form_type,
@@ -945,6 +951,7 @@ def _write_filing_v2(conn: Any, parsed: dict[str, Any], source: dict[str, Any]) 
         "return_timestamp": filing["return_timestamp"],
         "form_type": filing["form_type"],
         "filer_name": filing["name"],
+        "doing_business_as_name": filing.get("doing_business_as_name"),
         "filer_address": filing.get("address") or filing.get("filer_address_line1"),
         "filer_city": filing.get("city") or filing.get("filer_city"),
         "filer_state": filing.get("state") or filing.get("filer_state"),

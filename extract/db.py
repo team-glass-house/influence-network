@@ -194,6 +194,7 @@ CREATE TABLE IF NOT EXISTS irs990_filings (
     return_timestamp         TEXT,
     form_type                TEXT,
     filer_name               TEXT,
+    doing_business_as_name   TEXT,
     filer_address             TEXT,
     filer_city                TEXT,
     filer_state               TEXT,
@@ -211,8 +212,6 @@ CREATE TABLE IF NOT EXISTS irs990_filings (
     fundraising_expenses            REAL,    -- CYTotalProfFndrsngExpnsAmt
     filer_address_line1      TEXT,    -- ReturnHeader/Filer/USAddress AddressLine1Txt (or ForeignAddress)
     filer_address_line2      TEXT,    -- AddressLine2Txt
-    filer_city               TEXT,    -- CityNm
-    filer_state              TEXT,    -- StateAbbreviationCd (or ProvinceOrStateNm for foreign)
     filer_zip                TEXT,    -- ZIPCd (or ForeignPostalCd)
     political_activity_flag  INTEGER,
     mission                  TEXT,
@@ -395,6 +394,7 @@ def init_db(db_path: Path | None = None) -> None:
         filings_columns = {row["name"] for row in conn.execute("PRAGMA table_info(irs990_filings)")}
         for col, defn in (
             ("filer_address",                 "TEXT"),
+            ("doing_business_as_name",        "TEXT"),
             ("filer_city",                    "TEXT"),
             ("filer_state",                   "TEXT"),
             ("filer_zip_code",                "TEXT"),

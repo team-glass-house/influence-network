@@ -83,6 +83,14 @@ identity, while `irs990_source_objects` records the immutable IRS filename,
 fingerprint, parser version, and import state. This preserves multiple returns
 for one EIN and lets bulk imports resume without reparsing completed files.
 
+`irs990_filings` stores the filer mailing address in `filer_address`,
+`filer_city`, `filer_state`, and `filer_zip_code`. Address fields are populated
+when the source XML is ingested; updating the parser does not backfill existing
+rows that were already marked successful. Re-run ingestion for the source XML
+with the current parser version when an existing database needs the address
+fields refreshed. The filing-scoped `doing_business_as_name` field preserves
+the optional DBA name separately from the legal `filer_name`.
+
 The older `orgs` and `org_*` tables remain for compatibility with early
 notebooks, but should not be used for multi-year IRS analysis. Use
 `irs990_filings` as the starting point, then join schedule tables on

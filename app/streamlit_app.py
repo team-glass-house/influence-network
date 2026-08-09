@@ -167,10 +167,22 @@ def page_organizations() -> None:
 
     st.subheader("Filing history")
     filings = run_query("""
-        SELECT tax_year, form_type, total_revenue, total_expenses,
+        SELECT tax_year, form_type,
+               doing_business_as_name,
+               filer_address AS address_line1,
+               filer_city AS city,
+               filer_state AS state,
+               filer_zip_code AS zip_code,
+               total_revenue, total_expenses,
                political_activity_flag, mission
         FROM irs990_filings WHERE ein = ? ORDER BY tax_year DESC
     """, (ein,))
+    address_columns = ["address_line1", "city", "state", "zip_code"]
+    if not filings[address_columns].notna().any().any():
+        st.warning(
+            "No filer mailing addresses are populated in the loaded IRS 990 filings. "
+            "Re-ingest the source XML with the current parser to backfill them."
+        )
     st.dataframe(filings, use_container_width=True, hide_index=True)
 
     col1, col2 = st.columns(2)
