@@ -281,6 +281,88 @@ CREATE TABLE IF NOT EXISTS irs990_filing_related_orgs (
 );
 CREATE INDEX IF NOT EXISTS idx_irs990_related_org_ein ON irs990_filing_related_orgs(ein);
 
+CREATE TABLE IF NOT EXISTS transparency_website_observations (
+    observation_id INTEGER PRIMARY KEY,
+    requested_url TEXT NOT NULL,
+    normalized_url TEXT NOT NULL,
+    final_url TEXT,
+    status TEXT NOT NULL,
+    http_status INTEGER,
+    word_count INTEGER,
+    capped_word_count INTEGER,
+    pages_crawled INTEGER NOT NULL DEFAULT 0,
+    page_urls_json TEXT,
+    error TEXT,
+    robots_allowed INTEGER,
+    crawler_version TEXT NOT NULL,
+    policy_hash TEXT NOT NULL,
+    policy_json TEXT NOT NULL,
+    retrieved_at TEXT NOT NULL,
+    UNIQUE(normalized_url, crawler_version, policy_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_transparency_website_url
+    ON transparency_website_observations(normalized_url);
+
+CREATE TABLE IF NOT EXISTS transparency_website_candidates (
+    run_id TEXT NOT NULL,
+    filing_id INTEGER NOT NULL REFERENCES irs990_filings(filing_id),
+    source_type TEXT NOT NULL,
+    source_ein TEXT,
+    submitted_url TEXT,
+    normalized_url TEXT,
+    observation_id INTEGER REFERENCES transparency_website_observations(observation_id),
+    selected INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (run_id, filing_id, source_type, source_ein, normalized_url)
+);
+
+CREATE TABLE IF NOT EXISTS transparency_index_scores (
+    run_id TEXT NOT NULL,
+    index_version TEXT NOT NULL,
+    filing_id INTEGER NOT NULL REFERENCES irs990_filings(filing_id),
+    ein TEXT NOT NULL,
+    tax_year INTEGER,
+    index_score REAL,
+    normalized_index_score REAL,
+    observed_components INTEGER NOT NULL,
+    complete INTEGER NOT NULL,
+    website_observation_id INTEGER REFERENCES transparency_website_observations(observation_id),
+    board_members REAL,
+    volunteers REAL,
+    website_words REAL,
+    related_to_527s REAL,
+    related_to_c3s REAL,
+    political_expenses REAL,
+    total_salaries REAL,
+    unrestricted_net_assets REAL,
+    fundraising_expenses REAL,
+    generated_at TEXT NOT NULL,
+    PRIMARY KEY (run_id, filing_id)
+);
+CREATE INDEX IF NOT EXISTS idx_transparency_scores_ein_year
+    ON transparency_index_scores(ein, tax_year);
+
+CREATE TABLE IF NOT EXISTS transparency_crawl_runs (
+    run_id              TEXT PRIMARY KEY,
+    status              TEXT NOT NULL,
+    crawler_version     TEXT NOT NULL,
+    policy_hash         TEXT NOT NULL,
+    policy_json         TEXT NOT NULL,
+    max_sites           INTEGER,
+    candidate_count     INTEGER NOT NULL,
+    unique_url_count    INTEGER NOT NULL,
+    crawled_count       INTEGER NOT NULL DEFAULT 0,
+    reused_count        INTEGER NOT NULL DEFAULT 0,
+    started_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL,
+    completed_at        TEXT,
+    error               TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_transparency_crawl_runs_status
+    ON transparency_crawl_runs(status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_transparency_candidates_run_url
+    ON transparency_website_candidates(run_id, normalized_url, observation_id);
+
 CREATE TABLE IF NOT EXISTS irs990_filing_related_org_transactions (
     filing_id INTEGER NOT NULL REFERENCES irs990_filings(filing_id),
     line_no INTEGER NOT NULL, related_org_name TEXT, type TEXT, amount REAL,
