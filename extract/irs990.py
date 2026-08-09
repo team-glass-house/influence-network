@@ -30,7 +30,7 @@ from .entities import normalize_organization_name
 
 logger = logging.getLogger(__name__)
 
-PARSER_VERSION = "irs990-v8"  # v8: preserve filer address fields for matching
+PARSER_VERSION = "irs990-v9"  # v9: preserve matching and mailing address fields
 
 
 def _child(node: etree._Element | None, tag: str) -> etree._Element | None:
@@ -76,18 +76,48 @@ def _address_fields(node: etree._Element | None) -> dict[str, str | None]:
     """Extract the filer address across common 990 header variants."""
     address = _child(node, "USAddress")
     if address is None:
+        address = _child(node, "ForeignAddress")
+    if address is None:
         address = _child(node, "Address")
     return {
         "address": (
             _text(address, "AddressLine1Txt")
             or _text(address, "AddressLine1")
         ),
+        "address_line2": (
+            _text(address, "AddressLine2Txt")
+            or _text(address, "AddressLine2")
+        ),
         "city": _text(address, "CityNm") or _text(address, "City"),
         "state": (
             _text(address, "StateAbbreviationCd")
+            or _text(address, "ProvinceOrStateNm")
             or _text(address, "State")
         ),
-        "zip_code": _text(address, "ZIPCd") or _text(address, "ZIPCode"),
+        "zip_code": (
+            _text(address, "ZIPCd")
+            or _text(address, "ForeignPostalCd")
+            or _text(address, "ZIPCode")
+        ),
+        "filer_address_line1": (
+            _text(address, "AddressLine1Txt")
+            or _text(address, "AddressLine1")
+        ),
+        "filer_address_line2": (
+            _text(address, "AddressLine2Txt")
+            or _text(address, "AddressLine2")
+        ),
+        "filer_city": _text(address, "CityNm") or _text(address, "City"),
+        "filer_state": (
+            _text(address, "StateAbbreviationCd")
+            or _text(address, "ProvinceOrStateNm")
+            or _text(address, "State")
+        ),
+        "filer_zip": (
+            _text(address, "ZIPCd")
+            or _text(address, "ForeignPostalCd")
+            or _text(address, "ZIPCode")
+        ),
     }
 
 
@@ -915,10 +945,10 @@ def _write_filing_v2(conn: Any, parsed: dict[str, Any], source: dict[str, Any]) 
         "return_timestamp": filing["return_timestamp"],
         "form_type": filing["form_type"],
         "filer_name": filing["name"],
-        "filer_address": filing.get("address"),
-        "filer_city": filing.get("city"),
-        "filer_state": filing.get("state"),
-        "filer_zip_code": filing.get("zip_code"),
+        "filer_address": filing.get("address") or filing.get("filer_address_line1"),
+        "filer_city": filing.get("city") or filing.get("filer_city"),
+        "filer_state": filing.get("state") or filing.get("filer_state"),
+        "filer_zip_code": filing.get("zip_code") or filing.get("filer_zip"),
         "exempt_organization_type": filing["exempt_organization_type"],
         "total_revenue": filing["total_revenue"],
         "total_expenses": filing["total_expenses"],
@@ -932,6 +962,11 @@ def _write_filing_v2(conn: Any, parsed: dict[str, Any], source: dict[str, Any]) 
         "fundraising_expenses": filing.get("fundraising_expenses"),
         "political_activity_flag": filing["political_activity_flag"],
         "mission": filing["mission"],
+        "filer_address_line1": filing.get("filer_address_line1"),
+        "filer_address_line2": filing.get("filer_address_line2"),
+        "filer_city": filing.get("filer_city"),
+        "filer_state": filing.get("filer_state"),
+        "filer_zip": filing.get("filer_zip"),
     }
     upsert(conn, "irs990_filings", filing_row)
     filing_id = conn.execute(
