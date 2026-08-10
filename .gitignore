@@ -223,6 +223,10 @@ data/
 *.sqlite
 *.sqlite3
 
+# Project: Parquet export (lives on S3, not committed) + scratch
+parquet_export/
+.tmp/
+
 # Private files
 my_secrets.py
 
