@@ -120,3 +120,46 @@ organization-to-bill facts.
 intentionally import reusable Python functions rather than carrying their own
 ETL or matching logic. Cross-source names become analysis joins only after a
 reviewer records an `accepted` decision.
+
+## Transparency index
+
+The transparency pipeline produces a filing-year score based on Irvin's
+nine-component index (`irvin-9-v2`). The board component uses the total
+governing-body count from Form 990 Part I, line 4. Missing financial and
+governance fields stay missing, and each score records its component version.
+The notebook documents the formulas and limitations.
+Website observations are cached in SQLite with the crawl policy, timestamps,
+status, page URLs, and capped word counts.
+
+Run a small crawl first:
+
+```bash
+python -m extract.run transparency-index --db data/irs990_full.db \
+  --max-sites 25 --max-pages 10
+```
+
+Outputs are written to `data/transparency_index/` as versioned Parquet files
+and a JSON manifest. Use `--no-crawl` to score only cached observations, or
+`--max-sites 0` for a full crawl. Crawl runs persist their candidate snapshot
+and commit each URL independently, so an interrupted run can be resumed:
+
+```bash
+python -m extract.run transparency-index --db data/irs990_full.db \
+  --max-sites 0 --max-pages 10 --timeout 15 --delay 0.25 --workers 4
+
+python -m extract.run transparency-index --db data/irs990_full.db \
+  --resume
+```
+
+The second command resumes the latest running or interrupted crawl. Pass a
+specific run ID to `--resume` when more than one resumable run exists. Network
+crawls may use a small bounded worker count; SQLite writes remain serialized
+and each completed URL is checkpointed. The score table is also persisted in
+SQLite for downstream modeling.
+
+Refresh available IRS source objects after parser changes:
+
+```bash
+python -m extract.run --db data/irs990_full.db reingest-irs990 \
+  --root . --path-prefix drive/ --eligible-only --force
+```
