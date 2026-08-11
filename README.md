@@ -163,3 +163,26 @@ Refresh available IRS source objects after parser changes:
 python -m extract.run --db data/irs990_full.db reingest-irs990 \
   --root . --path-prefix drive/ --eligible-only --force
 ```
+
+`load_modeling_features()` defaults to complete rows for modeling. Use
+`min_observed_components` when a lower coverage threshold is justified.
+
+## End-to-end Transparency Index notebook
+
+`notebooks/transparency_index.ipynb` is the canonical end-to-end workflow. It
+documents the nine components and their limitations, checks complete and
+thresholded populations, explores coverage and score distributions, evaluates
+a grouped disclosed-activity classifier, summarizes the organization network,
+and reviews clustering and anomaly candidates. It keeps component missingness
+separate from Schedule R relationship prevalence and explains how to use each
+model output.
+
+`notebooks/03_modeling.ipynb` remains as a compatibility copy of the modeling
+workflow; new analysis should use `transparency_index.ipynb`.
+
+Run it from the repository root with:
+
+```bash
+python -m jupyter nbconvert --to notebook --execute \
+  notebooks/transparency_index.ipynb --output /tmp/transparency_index_executed.ipynb
+```

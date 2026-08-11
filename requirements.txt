@@ -10,6 +10,7 @@ boto3>=1.35.0         # optional S3 output
 sentence-transformers>=3.0.0  # semantic text embeddings
 numpy>=1.26.0         # vector math for cosine similarity
 scikit-learn>=1.6.0   # TF-IDF cosine similarity backend (analysis/align.py)
+matplotlib>=3.8.0     # plots in analysis notebooks
 pypdf>=6.1.0          # PDF text extraction (pdf_similarity notebook)
 pymupdf>=1.26.0       # fitz - used to build sample PDFs for the PDF similarity demo
 
