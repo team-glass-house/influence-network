@@ -125,8 +125,14 @@ reviewer records an `accepted` decision.
 
 The transparency pipeline produces a filing-year score based on Irvin's
 nine-component index (`irvin-9-v2`). The board component uses the total
-governing-body count from Form 990 Part I, line 4. Missing financial and
-governance fields stay missing, and each score records its component version.
+governing-body count from Form 990 Part I, line 4. Missing volunteer,
+relationship, political-expense, salary, and unrestricted-asset values are
+treated as zero inputs. A filing with no usable website receives a zero-word
+website score; related-site observations are still honored, while a usable
+submitted website without a successful observation stays missing. Ratio
+components still stay missing when their denominator is unavailable, except
+for fundraising when both expense and grant values indicate no activity. Each
+score records its component version.
 The notebook documents the formulas and limitations.
 Website observations are cached in SQLite with the crawl policy, timestamps,
 status, page URLs, and capped word counts.

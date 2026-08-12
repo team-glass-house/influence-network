@@ -169,17 +169,27 @@ def _bounded(value: pd.Series, lower: float = 0, upper: float = 1) -> pd.Series:
     return value.clip(lower=lower, upper=upper)
 
 
+def _zero_default(values: pd.Series) -> pd.Series:
+    return pd.to_numeric(values, errors="coerce").fillna(0)
+
+
 def _ratio_score(
     numerator: pd.Series,
     denominator: pd.Series,
     formula: str,
+    zero_when_no_activity: bool = False,
 ) -> pd.Series:
+    numerator = pd.to_numeric(numerator, errors="coerce")
+    denominator = pd.to_numeric(denominator, errors="coerce")
     result = pd.Series(pd.NA, index=numerator.index, dtype="Float64")
     valid = numerator.notna() & denominator.notna() & (denominator > 0)
     if formula == "one_minus":
         result.loc[valid] = 1 - numerator.loc[valid] / denominator.loc[valid]
     else:
         result.loc[valid] = numerator.loc[valid] / denominator.loc[valid]
+    if zero_when_no_activity:
+        no_activity = numerator.fillna(0).eq(0) & denominator.fillna(0).eq(0)
+        result.loc[no_activity] = 0
     return _bounded(result)
 
 
@@ -224,10 +234,8 @@ def calculate_index_components(
     ).astype("Float64")
     result.loc[board_missing, "board_members"] = pd.NA
 
-    volunteers = transparency_df["total_volunteers"]
-    result["volunteers"] = volunteers.map(
-        lambda value: pd.NA if pd.isna(value) else float(value == 0)
-    ).astype("Float64")
+    volunteers = _zero_default(transparency_df["total_volunteers"])
+    result["volunteers"] = volunteers.eq(0).astype("Float64")
 
     if website_scores is not None:
         website_columns = ["filing_id", "website_words", "website_observation_id"]
@@ -241,31 +249,44 @@ def calculate_index_components(
         result["website_words"] = pd.NA
         result["website_observation_id"] = pd.NA
 
-    result["related_to_527s"] = transparency_df["num_527s"].map(
-        lambda value: pd.NA if pd.isna(value) else float(value > 0)
-    ).astype("Float64")
-    result["related_to_c3s"] = transparency_df["num_c3s"].map(
-        lambda value: pd.NA if pd.isna(value) else float(value == 0)
-    ).astype("Float64")
+    if "website_observation_id" not in result:
+        result["website_observation_id"] = pd.NA
+    if "website" in transparency_df:
+        no_website = transparency_df["website"].map(
+            lambda value: pd.isna(value) or normalize_url(str(value)) is None
+        )
+        no_website_ids = set(transparency_df.loc[no_website, "filing_id"])
+        no_observation = result["website_words"].isna()
+        result.loc[
+            result["filing_id"].isin(no_website_ids) & no_observation,
+            "website_words",
+        ] = 0
+
+    result["related_to_527s"] = _zero_default(transparency_df["num_527s"]).gt(0).astype(
+        "Float64"
+    )
+    result["related_to_c3s"] = _zero_default(transparency_df["num_c3s"]).eq(0).astype(
+        "Float64"
+    )
     result["political_expenses"] = _ratio_score(
-        transparency_df["political_expenses"],
+        _zero_default(transparency_df["political_expenses"]),
         transparency_df["total_expenses"],
         "ratio",
     )
     result["total_salaries"] = _ratio_score(
-        transparency_df["total_salaries"],
+        _zero_default(transparency_df["total_salaries"]),
         transparency_df["total_expenses"],
         "one_minus",
     )
     result["unrestricted_net_assets"] = pd.Series(
         pd.NA, index=transparency_df.index, dtype="Float64"
     )
-    valid_assets = (
-        transparency_df["unrestricted_net_assets_eoy"].notna()
-        & transparency_df["total_expenses"].notna()
-        & (transparency_df["total_expenses"] > 0)
+    valid_assets = transparency_df["total_expenses"].notna() & (
+        transparency_df["total_expenses"] > 0
     )
-    net_assets = transparency_df["unrestricted_net_assets_eoy"].clip(lower=0)
+    net_assets = _zero_default(transparency_df["unrestricted_net_assets_eoy"]).clip(
+        lower=0
+    )
     result.loc[valid_assets, "unrestricted_net_assets"] = _bounded(
         1
         - net_assets.loc[valid_assets]
@@ -275,9 +296,10 @@ def calculate_index_components(
         )
     )
     result["fundraising_expenses"] = _ratio_score(
-        transparency_df["fundraising_expenses"],
+        _zero_default(transparency_df["fundraising_expenses"]),
         transparency_df["grants_and_contributions"],
         "one_minus",
+        zero_when_no_activity=True,
     )
 
     if "website_words" in result:
@@ -294,7 +316,9 @@ def calculate_index_components(
     result["normalized_index_score"] = (
         result["index_score"] / result["observed_components"] * len(SCORE_COLUMNS)
     ).where(result["observed_components"] > 0)
-    result["complete"] = (result["observed_components"] == len(SCORE_COLUMNS)).astype("int64")
+    result["complete"] = (result["observed_components"] == len(SCORE_COLUMNS)).astype(
+        "int64"
+    )
     result["run_id"] = run_id or datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     result["generated_at"] = datetime.now(UTC).isoformat()
 
