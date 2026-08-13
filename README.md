@@ -91,6 +91,11 @@ with the current parser version when an existing database needs the address
 fields refreshed. The filing-scoped `doing_business_as_name` field preserves
 the optional DBA name separately from the legal `filer_name`.
 
+The parser version is stored per source object. A parser-version change makes
+the next `irs990` directory or ZIP ingestion reparse previously successful XML
+files, so newly added fields such as `program_services_amt` and
+`management_and_general_amt` are populated without changing the source files.
+
 The older `orgs` and `org_*` tables remain for compatibility with early
 notebooks, but should not be used for multi-year IRS analysis. Use
 `irs990_filings` as the starting point, then join schedule tables on
@@ -115,3 +120,75 @@ organization-to-bill facts.
 intentionally import reusable Python functions rather than carrying their own
 ETL or matching logic. Cross-source names become analysis joins only after a
 reviewer records an `accepted` decision.
+
+## Transparency index
+
+The transparency pipeline produces a filing-year score based on Irvin's
+nine-component index (`irvin-9-v2`). The board component uses the total
+governing-body count from Form 990 Part I, line 4. Missing volunteer,
+relationship, political-expense, salary, and unrestricted-asset values are
+treated as zero inputs. A filing with no usable website receives a zero-word
+website score; related-site observations are still honored, while a usable
+submitted website without a successful observation stays missing. Ratio
+components still stay missing when their denominator is unavailable, except
+for fundraising when both expense and grant values indicate no activity. Each
+score records its component version.
+The notebook documents the formulas and limitations.
+Website observations are cached in SQLite with the crawl policy, timestamps,
+status, page URLs, and capped word counts.
+
+Run a small crawl first:
+
+```bash
+python -m extract.run transparency-index --db data/irs990_full.db \
+  --max-sites 25 --max-pages 10
+```
+
+Outputs are written to `data/transparency_index/` as versioned Parquet files
+and a JSON manifest. Use `--no-crawl` to score only cached observations, or
+`--max-sites 0` for a full crawl. Crawl runs persist their candidate snapshot
+and commit each URL independently, so an interrupted run can be resumed:
+
+```bash
+python -m extract.run transparency-index --db data/irs990_full.db \
+  --max-sites 0 --max-pages 10 --timeout 15 --delay 0.25 --workers 4
+
+python -m extract.run transparency-index --db data/irs990_full.db \
+  --resume
+```
+
+The second command resumes the latest running or interrupted crawl. Pass a
+specific run ID to `--resume` when more than one resumable run exists. Network
+crawls may use a small bounded worker count; SQLite writes remain serialized
+and each completed URL is checkpointed. The score table is also persisted in
+SQLite for downstream modeling.
+
+Refresh available IRS source objects after parser changes:
+
+```bash
+python -m extract.run --db data/irs990_full.db reingest-irs990 \
+  --root . --path-prefix drive/ --eligible-only --force
+```
+
+`load_modeling_features()` defaults to complete rows for modeling. Use
+`min_observed_components` when a lower coverage threshold is justified.
+
+## End-to-end Transparency Index notebook
+
+`notebooks/transparency_index.ipynb` is the canonical end-to-end workflow. It
+documents the nine components and their limitations, checks complete and
+thresholded populations, explores coverage and score distributions, evaluates
+a grouped disclosed-activity classifier, summarizes the organization network,
+and reviews clustering and anomaly candidates. It keeps component missingness
+separate from Schedule R relationship prevalence and explains how to use each
+model output.
+
+`notebooks/03_modeling.ipynb` remains as a compatibility copy of the modeling
+workflow; new analysis should use `transparency_index.ipynb`.
+
+Run it from the repository root with:
+
+```bash
+python -m jupyter nbconvert --to notebook --execute \
+  notebooks/transparency_index.ipynb --output /tmp/transparency_index_executed.ipynb
+```

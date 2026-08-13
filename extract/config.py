@@ -27,6 +27,10 @@ class Settings:
     lda_api_key: str
     data_dir: Path
     db_path: Path
+    s3_key: str
+    s3_secret: str
+    s3_arn: str
+    s3_region: str
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -46,6 +50,10 @@ class Settings:
             lda_api_key=os.getenv("LDA_API_KEY", "").strip(),
             data_dir=data_dir,
             db_path=db_path,
+            s3_key=os.getenv("S3_ACCESS_KEY", "").strip(),
+            s3_secret=os.getenv("S3_SECRET", "").strip(),
+            s3_arn=os.getenv("S3_BUCKET", "").strip(),
+            s3_region=os.getenv("S3_REGION", "").strip(),
         )
 
     def require(self, attr: str) -> str:

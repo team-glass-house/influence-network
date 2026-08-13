@@ -30,7 +30,7 @@ from .entities import normalize_organization_name
 
 logger = logging.getLogger(__name__)
 
-PARSER_VERSION = "irs990-v10"  # v10: preserve mailing and doing-business-as fields
+PARSER_VERSION = "irs990-v11"  # v11: current financial and governance fields
 
 
 def _child(node: etree._Element | None, tag: str) -> etree._Element | None:
@@ -199,6 +199,7 @@ def _parse_tree(tree: "etree._ElementTree") -> dict[str, Any]:
         "total_revenue": None,
         "total_expenses": None,
         "total_assets": None,
+        "grants_and_contributions": None,
         "voting_members_governing_body": None,
         "voting_members_independent": None,
         "total_volunteers": None,
@@ -206,6 +207,8 @@ def _parse_tree(tree: "etree._ElementTree") -> dict[str, Any]:
         "total_salaries": None,
         "unrestricted_net_assets_eoy": None,
         "fundraising_expenses": None,
+        "program_services_amt": None,
+        "management_and_general_amt": None,
         "political_activity_flag": None,
         "mission": None,
         "raw_json": None,
@@ -241,6 +244,14 @@ def _parse_tree(tree: "etree._ElementTree") -> dict[str, Any]:
             or _text(form, "TotalAssetsCurrentYear")
             or _text(_child(form, "Form990TotalAssetsGrp"), "EOYAmt")
         )
+        org["grants_and_contributions"] = _float(
+            _text(form, "CYGrantsAndContriAmt")
+            or _text(form, "CYContributionsGiftsGrantsAmt")
+            or _text(form, "CYContributionsGrantsAmt")
+            or _text(form, "ContributionsGiftsGrantsAmt")
+            or _text(form, "ContributionsGiftsGrantsCurrentYear")
+            or _text(form, "TotalContributionsAmt")
+        )
         # Governance / transparency fields.
         org["voting_members_governing_body"] = _float(
             _text(form, "VotingMembersGoverningBodyCnt")
@@ -266,6 +277,13 @@ def _parse_tree(tree: "etree._ElementTree") -> dict[str, Any]:
         org["fundraising_expenses"] = _float(
             _text(form, "CYTotalProfFndrsngExpnsAmt")
             or _text(form, "TotalFundraisingExpenseAmt")
+        )
+        functional_expenses = _child(form, "TotalFunctionalExpensesGrp")
+        org["program_services_amt"] = _float(
+            _text(functional_expenses, "ProgramServicesAmt")
+        )
+        org["management_and_general_amt"] = _float(
+            _text(functional_expenses, "ManagementAndGeneralAmt")
         )
         org["mission"] = (
             _text(form, "MissionDesc")
@@ -960,6 +978,7 @@ def _write_filing_v2(conn: Any, parsed: dict[str, Any], source: dict[str, Any]) 
         "total_revenue": filing["total_revenue"],
         "total_expenses": filing["total_expenses"],
         "total_assets": filing.get("total_assets"),
+        "grants_and_contributions": filing.get("grants_and_contributions"),
         "voting_members_governing_body": filing.get("voting_members_governing_body"),
         "voting_members_independent": filing.get("voting_members_independent"),
         "total_volunteers": filing.get("total_volunteers"),
@@ -967,6 +986,8 @@ def _write_filing_v2(conn: Any, parsed: dict[str, Any], source: dict[str, Any]) 
         "total_salaries": filing.get("total_salaries"),
         "unrestricted_net_assets_eoy": filing.get("unrestricted_net_assets_eoy"),
         "fundraising_expenses": filing.get("fundraising_expenses"),
+        "program_services_amt": filing.get("program_services_amt"),
+        "management_and_general_amt": filing.get("management_and_general_amt"),
         "political_activity_flag": filing["political_activity_flag"],
         "mission": filing["mission"],
         "filer_address_line1": filing.get("filer_address_line1"),
@@ -1015,7 +1036,7 @@ def _write_filing_v2(conn: Any, parsed: dict[str, Any], source: dict[str, Any]) 
     })
 
 
-def _ingest_path(conn: Any, path: str | Path) -> str:
+def _ingest_path(conn: Any, path: str | Path, force: bool = False) -> str:
     """Write one source object; return succeeded, skipped, missing_ein, or failed."""
     identity = _source_identity(path)
     source = _source_metadata(path, identity)
@@ -1031,7 +1052,12 @@ def _ingest_path(conn: Any, path: str | Path) -> str:
             ("Content hash differs for an existing source object ID", source["source_object_id"]),
         )
         return "conflict"
-    if existing and existing["parser_version"] == PARSER_VERSION and existing["ingest_status"] == "succeeded":
+    if (
+        not force
+        and existing
+        and existing["parser_version"] == PARSER_VERSION
+        and existing["ingest_status"] == "succeeded"
+    ):
         return "skipped"
     try:
         parsed = parse_990_file(path)
@@ -1076,6 +1102,85 @@ def ingest_990_directory(directory: str | Path, pattern: str = "*.xml",
                 logger.info("IRS 990 progress: %d files, %d succeeded", index, count)
     logger.info("IRS 990 ingest completed from %s: %s", directory, outcomes)
     return count
+
+
+def reingest_990_sources(
+    root: str | Path = ".",
+    db_path: Path | None = None,
+    batch_size: int = 250,
+    limit: int | None = None,
+    path_prefix: str | None = None,
+    eligible_only: bool = False,
+    force: bool = False,
+) -> dict[str, int]:
+    """Reparse source objects with the current parser."""
+    if batch_size < 1:
+        raise ValueError("batch_size must be positive")
+    if limit is not None and limit < 1:
+        raise ValueError("limit must be positive")
+    init_db(db_path)
+    root = Path(root)
+    outcomes: dict[str, int] = {}
+    processed = 0
+    with connect(db_path) as conn:
+        query = """
+            SELECT source_object_id, file_path
+            FROM irs990_source_objects
+            WHERE 1 = 1
+        """
+        params: list[str] = []
+        if not force:
+            query += " AND (parser_version <> ? OR ingest_status <> 'succeeded')"
+            params.append(PARSER_VERSION)
+        if path_prefix is not None:
+            query += " AND file_path LIKE ?"
+            params.append(f"{path_prefix}%")
+        if eligible_only:
+            query += """
+                AND source_object_id IN (
+                    SELECT source_object_id
+                    FROM irs990_filings
+                    WHERE form_type <> '990T'
+                      AND exempt_organization_type = '501(c)(4)'
+                    UNION
+                    SELECT f2.source_object_id
+                    FROM irs990_filing_related_orgs r
+                    JOIN irs990_filings f1 ON f1.filing_id = r.filing_id
+                    JOIN irs990_filings f2
+                      ON f2.ein = r.ein
+                     AND f2.tax_year = f1.tax_year
+                     AND f2.exempt_organization_type = '501(c)(3)'
+                    WHERE f1.form_type <> '990T'
+                      AND f1.exempt_organization_type = '501(c)(4)'
+                      AND r.ein IS NOT NULL
+                )
+            """
+        query += " ORDER BY source_object_id"
+        rows = conn.execute(query, params)
+        for row in rows:
+            if limit is not None and processed >= limit:
+                break
+            file_path = Path(row["file_path"]) if row["file_path"] else None
+            if file_path is None:
+                outcome = "missing_file"
+            else:
+                candidate = file_path if file_path.is_absolute() else root / file_path
+                if not candidate.is_file():
+                    outcome = "missing_file"
+                else:
+                    outcome = _ingest_path(conn, candidate, force=force)
+            outcomes[outcome] = outcomes.get(outcome, 0) + 1
+            processed += 1
+            if processed % batch_size == 0:
+                conn.commit()
+                logger.info(
+                    "IRS 990 re-ingest progress: %d source objects, outcomes=%s",
+                    processed,
+                    outcomes,
+                )
+        conn.commit()
+    logger.info("IRS 990 re-ingest completed: %s", outcomes)
+    return outcomes
 
 
 def _ingest_zip_member(conn: Any, zf: "zipfile.ZipFile", member: "zipfile.ZipInfo") -> str:

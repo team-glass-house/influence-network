@@ -45,6 +45,16 @@ def main(argv: list[str] | None = None) -> int:
     p_irs = sub.add_parser("irs990", help="Parse IRS 990 XML files in a folder")
     p_irs.add_argument("--dir", required=True)
     p_irs.add_argument("--pattern", default="*.xml")
+    p_reingest = sub.add_parser(
+        "reingest-irs990",
+        help="Refresh available IRS 990 source objects with the current parser",
+    )
+    p_reingest.add_argument("--root", type=Path, default=Path("."))
+    p_reingest.add_argument("--batch-size", type=int, default=250)
+    p_reingest.add_argument("--limit", type=int, default=None)
+    p_reingest.add_argument("--path-prefix", default=None)
+    p_reingest.add_argument("--eligible-only", action="store_true")
+    p_reingest.add_argument("--force", action="store_true")
     p_refresh = sub.add_parser(
         "refresh-analysis",
         help="Sync entity observations, generate candidates, and rebuild views",
@@ -58,6 +68,37 @@ def main(argv: list[str] | None = None) -> int:
         "--include-relationships",
         action="store_true",
         help="Include broader parent/subsidiary and regional discovery candidates",
+    )
+    p_transparency = sub.add_parser(
+        "transparency-index",
+        help="Crawl organization websites and build transparency scores",
+    )
+    p_transparency.add_argument("--db", dest="transparency_db", type=Path, default=None)
+    p_transparency.add_argument("--output-dir", type=Path, default=None)
+    p_transparency.add_argument(
+        "--max-sites",
+        type=int,
+        default=25,
+        help="Unique URLs to crawl; 0 means all candidates",
+    )
+    p_transparency.add_argument("--max-pages", type=int, default=10)
+    p_transparency.add_argument("--timeout", type=float, default=15.0)
+    p_transparency.add_argument("--delay", type=float, default=0.25)
+    p_transparency.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Concurrent site crawls; keep bounded to respect remote servers",
+    )
+    p_transparency.add_argument("--no-crawl", action="store_true")
+    p_transparency.add_argument("--s3", action="store_true")
+    p_transparency.add_argument(
+        "--resume",
+        nargs="?",
+        const="latest",
+        default=None,
+        metavar="RUN_ID",
+        help="Resume a running/interrupted crawl, or the latest one if omitted",
     )
 
     args = parser.parse_args(argv)
@@ -103,6 +144,20 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Ingested {n} 990 files.")
         return 0
 
+    if args.command == "reingest-irs990":
+        from .irs990 import reingest_990_sources
+        result = reingest_990_sources(
+            root=args.root,
+            db_path=args.db,
+            batch_size=args.batch_size,
+            limit=args.limit,
+            path_prefix=args.path_prefix,
+            eligible_only=args.eligible_only,
+            force=args.force,
+        )
+        print(result)
+        return 0
+
     if args.command == "refresh-analysis":
         from .pipeline import refresh_analysis_layers
         result = refresh_analysis_layers(
@@ -111,6 +166,36 @@ def main(argv: list[str] | None = None) -> int:
             include_relationship_candidates=args.include_relationships,
         )
         print(result.as_dict())
+        return 0
+
+    if args.command == "transparency-index":
+        from .transparency_pipeline import run_transparency_index
+        from .website_crawler import CrawlConfig
+
+        result = run_transparency_index(
+            db_path=args.transparency_db or args.db,
+            output_dir=args.output_dir,
+            max_sites=args.max_sites,
+            crawl=not args.no_crawl,
+            config=CrawlConfig(
+                max_pages=args.max_pages,
+                timeout_seconds=args.timeout,
+                delay_seconds=args.delay,
+            ),
+            write_s3=args.s3,
+            resume_run_id=args.resume,
+            workers=args.workers,
+        )
+        print({
+            "run_id": result.run_id,
+            "filings": result.filings,
+            "website_candidates": result.website_candidates,
+            "websites_crawled": result.websites_crawled,
+            "resumed": result.resumed,
+            "status": result.status,
+            "scores_path": str(result.scores_path),
+            "manifest_path": str(result.manifest_path),
+        })
         return 0
 
     parser.error(f"Unknown command: {args.command}")
