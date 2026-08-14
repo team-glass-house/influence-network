@@ -13,10 +13,30 @@ from .db import init_db
 from .s3_manager import df_to_s3
 from .website_crawler import normalize_url
 
-INDEX_VERSION = "irvin-9-v2"
+INDEX_VERSION = "irvin-9-v1"
 WEBSITE_WORD_CAP = 100_000
 VOTING_MEMBER_CAP = 25
 UNRESTRICTED_ASSET_EXPENSE_MULTIPLE = 3
+SOURCE_COLUMNS = (
+    "filing_id",
+    "ein",
+    "tax_year",
+    "filer_name",
+    "total_revenue",
+    "total_expenses",
+    "total_assets",
+    "voting_members_governing_body",
+    "total_volunteers",
+    "website",
+    "total_salaries",
+    "unrestricted_net_assets_eoy",
+    "fundraising_expenses",
+    "grants_and_contributions",
+    "num_527s",
+    "num_c3s",
+    "max_board_size",
+    "political_expenses",
+)
 SCORE_COLUMNS = (
     "board_members",
     "volunteers",
@@ -129,16 +149,71 @@ def _connection(db_path: Path | None = None) -> sqlite3.Connection:
     return connection
 
 
+def _sqlite_value(value: Any) -> Any:
+    return None if pd.isna(value) else value
+
+
 def get_transparency_index_data(
     db_path: Path | None = None,
-    store: bool = False,
+    run_id: str | None = None,
 ) -> pd.DataFrame:
     init_db(db_path)
     with _connection(db_path) as connection:
-        frame = pd.read_sql_query(SOURCE_QUERY, connection)
-    if store:
-        df_to_s3(frame, "parquet/transparency_source_data.parquet")
-    return frame
+        if run_id is None:
+            return pd.read_sql_query(SOURCE_QUERY, connection)
+        return pd.read_sql_query(
+            f"""
+            SELECT {", ".join(SOURCE_COLUMNS)}
+            FROM transparency_index_source
+            WHERE run_id = ?
+            ORDER BY filing_id
+            """,
+            connection,
+            params=(run_id,),
+        )
+
+
+def persist_source_data(
+    source: pd.DataFrame,
+    run_id: str,
+    db_path: Path | None = None,
+    generated_at: str | None = None,
+    index_version: str = INDEX_VERSION,
+) -> None:
+    missing = set(SOURCE_COLUMNS) - set(source.columns)
+    if missing:
+        raise ValueError(f"Missing transparency source columns: {sorted(missing)}")
+    init_db(db_path)
+    timestamp = generated_at or datetime.now(UTC).isoformat()
+    columns = ["run_id", "index_version", *SOURCE_COLUMNS, "generated_at"]
+    rows = [
+        (
+            run_id,
+            index_version,
+            *(_sqlite_value(value) for value in row),
+            timestamp,
+        )
+        for row in source[list(SOURCE_COLUMNS)].itertuples(index=False, name=None)
+    ]
+    with _connection(db_path) as connection:
+        connection.executemany(
+            f"""
+            INSERT INTO transparency_index_source ({", ".join(columns)})
+            VALUES ({", ".join("?" for _ in columns)})
+            ON CONFLICT(run_id, filing_id) DO UPDATE SET
+                {", ".join(f"{column}=excluded.{column}" for column in columns[1:])}
+            """,
+            rows,
+        )
+
+
+def ingest_transparency_index_source(
+    run_id: str,
+    db_path: Path | None = None,
+) -> pd.DataFrame:
+    source = get_transparency_index_data(db_path)
+    persist_source_data(source, run_id, db_path)
+    return get_transparency_index_data(db_path, run_id=run_id)
 
 
 def get_website_candidates(db_path: Path | None = None) -> pd.DataFrame:
@@ -196,8 +271,6 @@ def _ratio_score(
 def calculate_index_components(
     transparency_df: pd.DataFrame,
     website_scores: pd.DataFrame | None = None,
-    store: bool = False,
-    db_path: Path | None = None,
     run_id: str | None = None,
 ) -> pd.DataFrame:
     required = {
@@ -322,8 +395,6 @@ def calculate_index_components(
     result["run_id"] = run_id or datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     result["generated_at"] = datetime.now(UTC).isoformat()
 
-    if store:
-        write_index_outputs(result, output_dir=settings.data_dir / "transparency_index")
     return result
 
 
@@ -366,8 +437,11 @@ def write_index_outputs(
 def persist_scores(
     scores: pd.DataFrame,
     db_path: Path | None = None,
+    index_version: str = INDEX_VERSION,
 ) -> None:
     init_db(db_path)
+    scores = scores.copy()
+    scores["index_version"] = index_version
     columns = [
         "run_id",
         "index_version",
@@ -395,3 +469,123 @@ def persist_scores(
             """,
             rows,
         )
+
+
+def export_transparency_index_run(
+    db_path: Path | None = None,
+    output_dir: Path | None = None,
+    run_id: str | None = None,
+    write_s3: bool = False,
+) -> dict[str, Path]:
+    init_db(db_path)
+    with _connection(db_path) as connection:
+        if run_id is None:
+            row = connection.execute(
+                """
+                SELECT run_id
+                FROM transparency_index_scores
+                WHERE index_version = ?
+                ORDER BY generated_at DESC
+                LIMIT 1
+                """,
+                (INDEX_VERSION,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"No transparency index {INDEX_VERSION} run found")
+            run_id = str(row["run_id"])
+        scores = pd.read_sql_query(
+            f"""
+            SELECT s.filing_id, s.ein, s.tax_year, f.filer_name,
+                   s.index_version, s.board_members, s.volunteers,
+                   s.website_words, s.website_observation_id,
+                   s.related_to_527s, s.related_to_c3s,
+                   s.political_expenses, s.total_salaries,
+                   s.unrestricted_net_assets, s.fundraising_expenses,
+                   s.observed_components,
+                   s.index_score, s.normalized_index_score, s.complete,
+                   s.run_id, s.generated_at
+            FROM transparency_index_scores s
+            JOIN irs990_filings f ON f.filing_id = s.filing_id
+            WHERE s.run_id = ? AND s.index_version = ?
+            ORDER BY s.filing_id
+            """,
+            connection,
+            params=(run_id, INDEX_VERSION),
+        )
+        source = pd.read_sql_query(
+            f"""
+            SELECT {", ".join(SOURCE_COLUMNS)}
+            FROM transparency_index_source
+            WHERE run_id = ?
+            ORDER BY filing_id
+            """,
+            connection,
+            params=(run_id,),
+        )
+    if scores.empty:
+        raise ValueError(f"Transparency index run not found: {run_id}")
+    if source.empty:
+        raise ValueError(f"Transparency source snapshot not found: {run_id}")
+    return write_index_outputs(
+        scores,
+        output_dir=output_dir or settings.data_dir / "transparency_index",
+        source=source,
+        write_s3=write_s3,
+    )
+
+
+def import_transparency_parquet(
+    scores_path: Path,
+    source_path: Path,
+    db_path: Path | None = None,
+    run_id: str | None = None,
+) -> dict[str, str | int]:
+    scores = pd.read_parquet(scores_path)
+    source = pd.read_parquet(source_path)
+    required_scores = {
+        "run_id",
+        "index_version",
+        "generated_at",
+        "filing_id",
+        "ein",
+        "tax_year",
+        "filer_name",
+        *SCORE_COLUMNS,
+        "website_observation_id",
+        "observed_components",
+        "index_score",
+        "normalized_index_score",
+        "complete",
+    }
+    missing_scores = required_scores - set(scores.columns)
+    if missing_scores:
+        raise ValueError(f"Missing transparency score columns: {sorted(missing_scores)}")
+    missing_source = set(SOURCE_COLUMNS) - set(source.columns)
+    if missing_source:
+        raise ValueError(f"Missing transparency source columns: {sorted(missing_source)}")
+    score_run_ids = {str(value) for value in scores["run_id"].dropna().unique()}
+    if run_id is None:
+        if len(score_run_ids) != 1:
+            raise ValueError("Parquet scores must contain exactly one run_id")
+        run_id = score_run_ids.pop()
+    elif score_run_ids - {run_id}:
+        raise ValueError("Provided run_id does not match the Parquet scores")
+    scores = scores.copy()
+    scores["run_id"] = run_id
+    scores["index_version"] = INDEX_VERSION
+    generated = scores["generated_at"].dropna()
+    generated_at = str(generated.iloc[0]) if not generated.empty else None
+    persist_source_data(
+        source,
+        run_id,
+        db_path=db_path,
+        generated_at=generated_at,
+        index_version=INDEX_VERSION,
+    )
+    persist_scores(scores, db_path=db_path, index_version=INDEX_VERSION)
+    return {
+        "run_id": run_id,
+        "index_version": INDEX_VERSION,
+        "source_rows": len(source),
+        "score_rows": len(scores),
+    }

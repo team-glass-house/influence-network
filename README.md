@@ -123,8 +123,8 @@ reviewer records an `accepted` decision.
 
 ## Transparency index
 
-The transparency pipeline produces a filing-year score based on Irvin's
-nine-component index (`irvin-9-v2`). The board component uses the total
+The transparency pipeline produces a filing-year score based on the nine-component
+transparency index (`irvin-9-v1`). The board component uses the total
 governing-body count from Form 990 Part I, line 4. Missing volunteer,
 relationship, political-expense, salary, and unrestricted-asset values are
 treated as zero inputs. A filing with no usable website receives a zero-word
@@ -144,10 +144,11 @@ python -m extract.run transparency-index --db data/irs990_full.db \
   --max-sites 25 --max-pages 10
 ```
 
-Outputs are written to `data/transparency_index/` as versioned Parquet files
-and a JSON manifest. Use `--no-crawl` to score only cached observations, or
-`--max-sites 0` for a full crawl. Crawl runs persist their candidate snapshot
-and commit each URL independently, so an interrupted run can be resumed:
+The source snapshot and scores are written to SQLite. Add `--export-parquet`
+to also write the current Parquet representation and JSON manifest. Use
+`--no-crawl` to score only cached observations, or `--max-sites 0` for a full
+crawl. Crawl runs persist their candidate snapshot and commit each URL
+independently, so an interrupted run can be resumed:
 
 ```bash
 python -m extract.run transparency-index --db data/irs990_full.db \
@@ -161,7 +162,21 @@ The second command resumes the latest running or interrupted crawl. Pass a
 specific run ID to `--resume` when more than one resumable run exists. Network
 crawls may use a small bounded worker count; SQLite writes remain serialized
 and each completed URL is checkpointed. The score table is also persisted in
-SQLite for downstream modeling.
+SQLite for downstream modeling. Export a stored SQL run with:
+
+```bash
+python -m extract.run --db data/irs990_full.db \
+  transparency-export-parquet --run-id RUN_ID
+```
+
+Import the current Parquet pair into the SQL tables with:
+
+```bash
+python -m extract.run --db data/irs990_full.db \
+  transparency-import-parquet \
+  --scores data/transparency_index/transparency_index__RUN_ID.parquet \
+  --source data/transparency_index/transparency_source__RUN_ID.parquet
+```
 
 Refresh available IRS source objects after parser changes:
 

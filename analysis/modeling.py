@@ -27,6 +27,8 @@ from sklearn.model_selection import GroupShuffleSplit
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
+from extract.transparency_index import INDEX_VERSION
+
 
 TRANSPARENCY_COMPONENTS = (
     "board_members",
@@ -68,13 +70,14 @@ class NetworkAnalysisResult:
 
 def _score_run_clause(run_id: str | None) -> tuple[str, tuple[Any, ...]]:
     if run_id is not None:
-        return "s.run_id = ?", (run_id,)
+        return "s.run_id = ? AND s.index_version = ?", (run_id, INDEX_VERSION)
     return (
         "s.run_id = ("
         "SELECT run_id FROM transparency_index_scores "
+        "WHERE index_version = ? "
         "ORDER BY generated_at DESC LIMIT 1"
-        ")",
-        (),
+        ") AND s.index_version = ?",
+        (INDEX_VERSION, INDEX_VERSION),
     )
 
 

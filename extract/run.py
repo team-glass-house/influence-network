@@ -93,6 +93,11 @@ def main(argv: list[str] | None = None) -> int:
     p_transparency.add_argument("--no-crawl", action="store_true")
     p_transparency.add_argument("--s3", action="store_true")
     p_transparency.add_argument(
+        "--export-parquet",
+        action="store_true",
+        help="Export the SQL run to Parquet after scoring",
+    )
+    p_transparency.add_argument(
         "--resume",
         nargs="?",
         const="latest",
@@ -100,6 +105,20 @@ def main(argv: list[str] | None = None) -> int:
         metavar="RUN_ID",
         help="Resume a running/interrupted crawl, or the latest one if omitted",
     )
+    p_export = sub.add_parser(
+        "transparency-export-parquet",
+        help="Export a SQL transparency-index run to Parquet",
+    )
+    p_export.add_argument("--run-id", default=None)
+    p_export.add_argument("--output-dir", type=Path, default=None)
+    p_export.add_argument("--s3", action="store_true")
+    p_import = sub.add_parser(
+        "transparency-import-parquet",
+        help="Import the current transparency Parquet files into SQLite",
+    )
+    p_import.add_argument("--scores", type=Path, required=True)
+    p_import.add_argument("--source", type=Path, required=True)
+    p_import.add_argument("--run-id", default=None)
 
     args = parser.parse_args(argv)
     _setup_logging(args.verbose)
@@ -168,6 +187,30 @@ def main(argv: list[str] | None = None) -> int:
         print(result.as_dict())
         return 0
 
+    if args.command == "transparency-export-parquet":
+        from .transparency_index import export_transparency_index_run
+
+        paths = export_transparency_index_run(
+            db_path=args.db,
+            output_dir=args.output_dir,
+            run_id=args.run_id,
+            write_s3=args.s3,
+        )
+        print({name: str(path) for name, path in paths.items()})
+        return 0
+
+    if args.command == "transparency-import-parquet":
+        from .transparency_index import import_transparency_parquet
+
+        result = import_transparency_parquet(
+            scores_path=args.scores,
+            source_path=args.source,
+            db_path=args.db,
+            run_id=args.run_id,
+        )
+        print(result)
+        return 0
+
     if args.command == "transparency-index":
         from .transparency_pipeline import run_transparency_index
         from .website_crawler import CrawlConfig
@@ -185,6 +228,7 @@ def main(argv: list[str] | None = None) -> int:
             write_s3=args.s3,
             resume_run_id=args.resume,
             workers=args.workers,
+            export_parquet=args.export_parquet,
         )
         print({
             "run_id": result.run_id,
@@ -193,8 +237,8 @@ def main(argv: list[str] | None = None) -> int:
             "websites_crawled": result.websites_crawled,
             "resumed": result.resumed,
             "status": result.status,
-            "scores_path": str(result.scores_path),
-            "manifest_path": str(result.manifest_path),
+            "scores_path": str(result.scores_path) if result.scores_path else None,
+            "manifest_path": str(result.manifest_path) if result.manifest_path else None,
         })
         return 0
 

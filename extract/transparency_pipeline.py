@@ -14,10 +14,10 @@ import pandas as pd
 from .config import settings
 from .db import init_db
 from .transparency_index import (
-    INDEX_VERSION,
     calculate_index_components,
     get_transparency_index_data,
     get_website_candidates,
+    ingest_transparency_index_source,
     persist_scores,
     write_index_outputs,
 )
@@ -33,8 +33,8 @@ class TransparencyRun:
     filings: int
     website_candidates: int
     websites_crawled: int
-    scores_path: Path
-    manifest_path: Path
+    scores_path: Path | None
+    manifest_path: Path | None
     status: str = "completed"
     resumed: bool = False
     websites_remaining: int = 0
@@ -347,6 +347,7 @@ def run_transparency_index(
     crawler: Callable[[str, CrawlConfig], CrawlResult] = crawl_website,
     resume_run_id: str | None = None,
     workers: int = 1,
+    export_parquet: bool = False,
 ) -> TransparencyRun:
     if max_sites == 0:
         max_sites = None
@@ -356,7 +357,6 @@ def run_transparency_index(
         raise ValueError("workers must be positive")
     init_db(db_path)
     config = config or CrawlConfig()
-    source = get_transparency_index_data(db_path)
     output_dir = output_dir or settings.data_dir / "transparency_index"
 
     resumed = resume_run_id is not None
@@ -392,6 +392,11 @@ def run_transparency_index(
             urls = candidates[["normalized_url", "submitted_url"]].drop_duplicates(
                 "normalized_url"
             ).sort_values("normalized_url")
+            source = get_transparency_index_data(db_path, run_id=run_id)
+            if source.empty:
+                raise ValueError(
+                    f"Transparency source snapshot not found for run {run_id}"
+                )
             logger.info(
                 "Resuming transparency crawl %s: %d URLs remain in the snapshot",
                 run_id,
@@ -418,6 +423,7 @@ def run_transparency_index(
             )
             _insert_candidates(connection, run_id, candidates)
             connection.commit()
+            source = ingest_transparency_index_source(run_id, db_path)
             logger.info(
                 "Started transparency crawl %s: %d unique URLs, %d filing candidates",
                 run_id,
@@ -567,19 +573,21 @@ def run_transparency_index(
         connection.commit()
 
     persist_scores(scores, db_path)
-    paths = write_index_outputs(
-        scores,
-        output_dir=output_dir,
-        source=source,
-        write_s3=write_s3,
-    )
+    paths: dict[str, Path] = {}
+    if export_parquet or write_s3:
+        paths = write_index_outputs(
+            scores,
+            output_dir=output_dir,
+            source=source,
+            write_s3=write_s3,
+        )
     return TransparencyRun(
         run_id=run_id,
         filings=len(source),
         website_candidates=len(candidates),
         websites_crawled=crawl_count,
-        scores_path=paths["scores"],
-        manifest_path=paths["manifest"],
+        scores_path=paths.get("scores"),
+        manifest_path=paths.get("manifest"),
         status="completed",
         resumed=resumed,
         websites_remaining=0,

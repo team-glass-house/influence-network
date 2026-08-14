@@ -363,6 +363,33 @@ CREATE INDEX IF NOT EXISTS idx_transparency_crawl_runs_status
 CREATE INDEX IF NOT EXISTS idx_transparency_candidates_run_url
     ON transparency_website_candidates(run_id, normalized_url, observation_id);
 
+CREATE TABLE IF NOT EXISTS transparency_index_source (
+    run_id                         TEXT NOT NULL,
+    index_version                  TEXT NOT NULL,
+    filing_id                      INTEGER NOT NULL REFERENCES irs990_filings(filing_id),
+    ein                            TEXT NOT NULL,
+    tax_year                       INTEGER,
+    filer_name                     TEXT,
+    total_revenue                  REAL,
+    total_expenses                 REAL,
+    total_assets                   REAL,
+    voting_members_governing_body  INTEGER,
+    total_volunteers               INTEGER,
+    website                        TEXT,
+    total_salaries                 REAL,
+    unrestricted_net_assets_eoy    REAL,
+    fundraising_expenses           REAL,
+    grants_and_contributions       REAL,
+    num_527s                       INTEGER,
+    num_c3s                        INTEGER,
+    max_board_size                INTEGER,
+    political_expenses             REAL,
+    generated_at                   TEXT NOT NULL,
+    PRIMARY KEY (run_id, filing_id)
+);
+CREATE INDEX IF NOT EXISTS idx_transparency_source_ein_year
+    ON transparency_index_source(ein, tax_year);
+
 CREATE TABLE IF NOT EXISTS irs990_filing_related_org_transactions (
     filing_id INTEGER NOT NULL REFERENCES irs990_filings(filing_id),
     line_no INTEGER NOT NULL, related_org_name TEXT, type TEXT, amount REAL,
