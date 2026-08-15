@@ -936,6 +936,17 @@ def _replace_filing_rows(conn: Any, table: str, filing_id: int,
     insert_many(conn, table, prepared)
 
 
+def _has_lobbying_values(lobbying: dict[str, Any] | None) -> bool:
+    """Return whether a parsed Schedule C row contains a data value."""
+    if not lobbying:
+        return False
+    return any(
+        value is not None and value != "" and value != []
+        for key, value in lobbying.items()
+        if key not in {"ein", "tax_year", "raw_json"}
+    )
+
+
 def _write_filing_v2(conn: Any, parsed: dict[str, Any], source: dict[str, Any]) -> None:
     filing = parsed["filing"]
     ein = filing["ein"]
@@ -1014,7 +1025,7 @@ def _write_filing_v2(conn: Any, parsed: dict[str, Any], source: dict[str, Any]) 
     _replace_filing_rows(conn, "irs990_filing_related_org_transactions", filing_id,
                          parsed["related_org_transactions"] or [], {"filer_ein", "tax_year"})
     conn.execute("DELETE FROM irs990_filing_lobbying WHERE filing_id = ?", (filing_id,))
-    if parsed["lobbying"]:
+    if _has_lobbying_values(parsed["lobbying"]):
         upsert(conn, "irs990_filing_lobbying", {
             "filing_id": filing_id,
             **{key: value for key, value in parsed["lobbying"].items()

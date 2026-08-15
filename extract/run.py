@@ -28,6 +28,17 @@ def main(argv: list[str] | None = None) -> int:
     p_con.add_argument("--congress", type=int, required=True)
     p_con.add_argument("--bill-type", default="hr")
     p_con.add_argument("--limit", type=int, default=None)
+    p_con_detail = sub.add_parser(
+        "congress-details",
+        help="Backfill missing bill fields from Congress.gov detail responses",
+    )
+    p_con_detail.add_argument("--limit", type=int, default=None)
+    p_con_detail.add_argument(
+        "--all",
+        dest="linked_only",
+        action="store_false",
+        help="Backfill every bill with a missing detail field, not just linked bills",
+    )
 
     p_fc = sub.add_parser("fec-committees", help="Collect FEC committees")
     p_fc.add_argument("--committee-type", default=None, help="e.g. O for Super PAC")
@@ -131,10 +142,22 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "congress":
         from .congress import CongressCollector
-        n = CongressCollector(db_path=args.db).collect_bills(
-            args.congress, args.bill_type, args.limit
-        )
+        collector = CongressCollector(db_path=args.db)
+        try:
+            n = collector.collect_bills(args.congress, args.bill_type, args.limit)
+        finally:
+            collector.close()
         print(f"Collected {n} bills.")
+        return 0
+
+    if args.command == "congress-details":
+        from .congress import CongressCollector
+        collector = CongressCollector(db_path=args.db)
+        try:
+            n = collector.backfill_bill_details(args.limit, args.linked_only)
+        finally:
+            collector.close()
+        print(f"Backfilled {n} bill details.")
         return 0
 
     if args.command == "fec-committees":

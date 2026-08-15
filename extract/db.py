@@ -36,44 +36,6 @@ CREATE TABLE IF NOT EXISTS bills (
     fetched_at     TEXT DEFAULT (datetime('now'))
 );
 
-CREATE TABLE IF NOT EXISTS bill_actions (
-    bill_id     TEXT NOT NULL REFERENCES bills(bill_id),
-    action_date TEXT,
-    action_code TEXT,
-    action_text TEXT,
-    raw_json    TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_actions_bill ON bill_actions(bill_id);
-
-CREATE TABLE IF NOT EXISTS bill_sponsors (
-    bill_id    TEXT NOT NULL REFERENCES bills(bill_id),
-    bioguide_id TEXT,
-    full_name  TEXT,
-    party      TEXT,
-    state      TEXT,
-    is_original_cosponsor INTEGER,  -- 0 = sponsor, 1 = cosponsor
-    raw_json   TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_sponsors_bill ON bill_sponsors(bill_id);
-
-CREATE TABLE IF NOT EXISTS bill_text_versions (
-    bill_id      TEXT NOT NULL REFERENCES bills(bill_id),
-    version_code TEXT,                 -- e.g. "Introduced in House"
-    version_date TEXT,
-    format_type  TEXT,                 -- "Formatted Text", "XML", ...
-    url          TEXT,
-    PRIMARY KEY (bill_id, version_code, format_type)
-);
-
-CREATE TABLE IF NOT EXISTS members (
-    bioguide_id TEXT PRIMARY KEY,
-    full_name   TEXT,
-    party       TEXT,
-    state       TEXT,
-    chamber     TEXT,
-    raw_json    TEXT
-);
-
 -- ===================== FEC (openFEC) =====================
 CREATE TABLE IF NOT EXISTS committees (
     committee_id              TEXT PRIMARY KEY,

@@ -45,7 +45,7 @@ def _cfg(name: str, default: str | None = None) -> str | None:
 # Locally it defaults to the on-disk export.
 PARQUET_BASE = _cfg("PARQUET_BASE", str(ROOT / "parquet_export"))
 
-# Base tables that were exported to Parquet (members had 0 rows -> skipped).
+# Base tables exported to Parquet; empty legacy tables are intentionally absent.
 TABLES = [
     # Only the tables the app actually queries (others were materialized away).
     "organizations", "irs990_filings", "irs990_filing_people",
