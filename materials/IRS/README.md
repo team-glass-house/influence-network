@@ -1,6 +1,23 @@
 # IRS Overview
 
+<small><!--
+Source - https://stackoverflow.com/a/23681394
+Posted by Suneel Kumar, modified by community. See post 'Timeline' for change history
+Retrieved 2026-08-14, License - CC BY-SA 3.0
+--></small>
 
+<object data="materials\IRS\form_990_file_type_matrix.pdf" type="application/pdf" width="750px" height="750px">
+    <embed src="materials\IRS\form_990_file_type_matrix.pdf" type="application/pdf">
+        <p>This browser does not support PDFs. Please download the PDF to view it: <a href="materials\IRS\form_990_file_type_matrix.pdf">Download PDF</a>.</p>
+    </embed>
+</object>
+
+<small>IRS. (2026, June 28). Form 990 series: Which forms do exempt organizations file | Internal Revenue Service. Internal Revenue Service. https://www.irs.gov/charities-non-profits/form-990-series-which-forms-do-exempt-organizations-file <br>
+Clear outline for which forms 501(c) organizations must file.</small>
+
+
+
+---
 | Schedule | Name | Included | Reasoning |
 |---|---|---|---|
 | Schedule A<br> [PDF](https://www.irs.gov/pub/irs-pdf/f990sa.pdf) [Instructions]() | Public Charity Status and Public Support | No | Outside of the scope of this project. |
