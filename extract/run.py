@@ -82,7 +82,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_transparency = sub.add_parser(
         "transparency-index",
-        help="Crawl organization websites and build transparency scores",
+        help="Build transparency scores for all non-990-T filings",
     )
     p_transparency.add_argument("--db", dest="transparency_db", type=Path, default=None)
     p_transparency.add_argument("--output-dir", type=Path, default=None)
@@ -90,18 +90,37 @@ def main(argv: list[str] | None = None) -> int:
         "--max-sites",
         type=int,
         default=25,
-        help="Unique URLs to crawl; 0 means all candidates",
+        help="Retained for compatibility; website crawling is disabled",
     )
-    p_transparency.add_argument("--max-pages", type=int, default=10)
-    p_transparency.add_argument("--timeout", type=float, default=15.0)
-    p_transparency.add_argument("--delay", type=float, default=0.25)
+    p_transparency.add_argument(
+        "--max-pages",
+        type=int,
+        default=10,
+        help="Retained for compatibility; website crawling is disabled",
+    )
+    p_transparency.add_argument(
+        "--timeout",
+        type=float,
+        default=15.0,
+        help="Retained for compatibility; website crawling is disabled",
+    )
+    p_transparency.add_argument(
+        "--delay",
+        type=float,
+        default=0.25,
+        help="Retained for compatibility; website crawling is disabled",
+    )
     p_transparency.add_argument(
         "--workers",
         type=int,
         default=1,
-        help="Concurrent site crawls; keep bounded to respect remote servers",
+        help="Retained for compatibility; website crawling is disabled",
     )
-    p_transparency.add_argument("--no-crawl", action="store_true")
+    p_transparency.add_argument(
+        "--no-crawl",
+        action="store_true",
+        help="Retained for compatibility; website collection is disabled",
+    )
     p_transparency.add_argument("--s3", action="store_true")
     p_transparency.add_argument(
         "--export-parquet",
@@ -114,7 +133,7 @@ def main(argv: list[str] | None = None) -> int:
         const="latest",
         default=None,
         metavar="RUN_ID",
-        help="Resume a running/interrupted crawl, or the latest one if omitted",
+        help="Retained for compatibility; crawl resumption is unsupported",
     )
     p_export = sub.add_parser(
         "transparency-export-parquet",

@@ -13,7 +13,7 @@ from .db import init_db
 from .s3_manager import df_to_s3
 from .website_crawler import normalize_url
 
-INDEX_VERSION = "irvin-9-v1"
+INDEX_VERSION = "irvin-8-v1"
 WEBSITE_WORD_CAP = 100_000
 VOTING_MEMBER_CAP = 25
 UNRESTRICTED_ASSET_EXPENSE_MULTIPLE = 3
@@ -40,7 +40,6 @@ SOURCE_COLUMNS = (
 SCORE_COLUMNS = (
     "board_members",
     "volunteers",
-    "website_words",
     "related_to_527s",
     "related_to_c3s",
     "political_expenses",
@@ -115,7 +114,6 @@ LEFT JOIN related_527 r527 ON r527.filing_id = f.filing_id
 LEFT JOIN related_c3 c3 ON c3.filing_id = f.filing_id
 LEFT JOIN political ON political.filing_id = f.filing_id
 WHERE f.form_type <> '990T'
-  AND f.exempt_organization_type = '501(c)(4)'
 """
 
 RELATED_C3_WEBSITE_QUERY = """
@@ -186,7 +184,7 @@ def persist_source_data(
     init_db(db_path)
     timestamp = generated_at or datetime.now(UTC).isoformat()
     columns = ["run_id", "index_version", *SOURCE_COLUMNS, "generated_at"]
-    rows = [
+    rows = (
         (
             run_id,
             index_version,
@@ -194,7 +192,7 @@ def persist_source_data(
             timestamp,
         )
         for row in source[list(SOURCE_COLUMNS)].itertuples(index=False, name=None)
-    ]
+    )
     with _connection(db_path) as connection:
         connection.executemany(
             f"""
@@ -213,7 +211,7 @@ def ingest_transparency_index_source(
 ) -> pd.DataFrame:
     source = get_transparency_index_data(db_path)
     persist_source_data(source, run_id, db_path)
-    return get_transparency_index_data(db_path, run_id=run_id)
+    return source
 
 
 def get_website_candidates(db_path: Path | None = None) -> pd.DataFrame:
@@ -273,6 +271,12 @@ def calculate_index_components(
     website_scores: pd.DataFrame | None = None,
     run_id: str | None = None,
 ) -> pd.DataFrame:
+    """Calculate the eight non-website transparency components.
+
+    ``website_scores`` remains an accepted argument for compatibility with
+    stored callers, but website data is intentionally not part of the index.
+    The nullable website output columns are retained for the database contract.
+    """
     required = {
         "filing_id",
         "ein",
@@ -309,31 +313,6 @@ def calculate_index_components(
 
     volunteers = _zero_default(transparency_df["total_volunteers"])
     result["volunteers"] = volunteers.eq(0).astype("Float64")
-
-    if website_scores is not None:
-        website_columns = ["filing_id", "website_words", "website_observation_id"]
-        available = [column for column in website_columns if column in website_scores]
-        if "website_words" in available:
-            result = result.merge(website_scores[available], on="filing_id", how="left")
-        else:
-            result["website_words"] = pd.NA
-            result["website_observation_id"] = pd.NA
-    else:
-        result["website_words"] = pd.NA
-        result["website_observation_id"] = pd.NA
-
-    if "website_observation_id" not in result:
-        result["website_observation_id"] = pd.NA
-    if "website" in transparency_df:
-        no_website = transparency_df["website"].map(
-            lambda value: pd.isna(value) or normalize_url(str(value)) is None
-        )
-        no_website_ids = set(transparency_df.loc[no_website, "filing_id"])
-        no_observation = result["website_words"].isna()
-        result.loc[
-            result["filing_id"].isin(no_website_ids) & no_observation,
-            "website_words",
-        ] = 0
 
     result["related_to_527s"] = _zero_default(transparency_df["num_527s"]).gt(0).astype(
         "Float64"
@@ -375,23 +354,18 @@ def calculate_index_components(
         zero_when_no_activity=True,
     )
 
-    if "website_words" in result:
-        result["website_words"] = result["website_words"].astype("Float64")
-        result["website_words"] = result["website_words"].map(
-            lambda value: pd.NA
-            if pd.isna(value)
-            else float(1 - min(value, WEBSITE_WORD_CAP) / WEBSITE_WORD_CAP)
-        ).astype("Float64")
-    score_frame = result[list(SCORE_COLUMNS)].astype("Float64")
-    result["observed_components"] = score_frame.notna().sum(axis=1).astype("int64")
-    result["index_score"] = score_frame.sum(axis=1, skipna=True).astype("Float64")
-    result.loc[result["observed_components"] == 0, "index_score"] = pd.NA
-    result["normalized_index_score"] = (
-        result["index_score"] / result["observed_components"] * len(SCORE_COLUMNS)
-    ).where(result["observed_components"] > 0)
-    result["complete"] = (result["observed_components"] == len(SCORE_COLUMNS)).astype(
-        "int64"
-    )
+    # Keep the legacy output columns, but do not let website observations affect
+    # the score. A null calculated component is an uninformative zero-value.
+    result["website_words"] = pd.Series(pd.NA, index=result.index, dtype="Float64")
+    result["website_observation_id"] = pd.Series(pd.NA, index=result.index, dtype="Int64")
+    score_frame = result[list(SCORE_COLUMNS)].astype("Float64").fillna(0)
+    result.loc[:, list(SCORE_COLUMNS)] = score_frame
+    result["observed_components"] = len(SCORE_COLUMNS)
+    result["index_score"] = score_frame.sum(axis=1).astype("Float64")
+    # Retain the column for downstream compatibility; all rows are complete, so
+    # no partial-row normalization is performed.
+    result["normalized_index_score"] = result["index_score"]
+    result["complete"] = 1
     result["run_id"] = run_id or datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     result["generated_at"] = datetime.now(UTC).isoformat()
 
@@ -456,9 +430,10 @@ def persist_scores(
         *SCORE_COLUMNS,
         "generated_at",
     ]
-    rows: list[tuple[Any, ...]] = []
-    for row in scores[columns].itertuples(index=False, name=None):
-        rows.append(tuple(None if pd.isna(value) else value for value in row))
+    rows = (
+        tuple(None if pd.isna(value) else value for value in row)
+        for row in scores[columns].itertuples(index=False, name=None)
+    )
     with _connection(db_path) as connection:
         connection.executemany(
             f"""
@@ -551,6 +526,7 @@ def import_transparency_parquet(
         "tax_year",
         "filer_name",
         *SCORE_COLUMNS,
+        "website_words",
         "website_observation_id",
         "observed_components",
         "index_score",
@@ -573,6 +549,8 @@ def import_transparency_parquet(
     scores = scores.copy()
     scores["run_id"] = run_id
     scores["index_version"] = INDEX_VERSION
+    scores["website_words"] = pd.NA
+    scores["website_observation_id"] = pd.NA
     generated = scores["generated_at"].dropna()
     generated_at = str(generated.iloc[0]) if not generated.empty else None
     persist_source_data(

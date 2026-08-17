@@ -33,7 +33,6 @@ from extract.transparency_index import INDEX_VERSION
 TRANSPARENCY_COMPONENTS = (
     "board_members",
     "volunteers",
-    "website_words",
     "related_to_527s",
     "related_to_c3s",
     "political_expenses",
@@ -41,7 +40,7 @@ TRANSPARENCY_COMPONENTS = (
     "unrestricted_net_assets",
     "fundraising_expenses",
 )
-MODEL_FEATURE_VERSION = "modeling-v1"
+MODEL_FEATURE_VERSION = "modeling-v2"
 PLACEHOLDER_EINS = frozenset({"000000000", "111111111", "999999999"})
 
 
@@ -90,10 +89,15 @@ def load_modeling_features(
     """Load scores with covariates and missingness flags."""
     if min_observed_components is not None:
         if not 1 <= min_observed_components <= len(TRANSPARENCY_COMPONENTS):
-            raise ValueError("min_observed_components must be between 1 and 9")
+            raise ValueError(
+                "min_observed_components must be between "
+                f"1 and {len(TRANSPARENCY_COMPONENTS)}"
+            )
         if complete_only:
             raise ValueError("choose complete_only or min_observed_components")
-    threshold = 9 if complete_only else min_observed_components
+    threshold = (
+        len(TRANSPARENCY_COMPONENTS) if complete_only else min_observed_components
+    )
     run_clause, run_params = _score_run_clause(run_id)
     query = f"""
     WITH disclosed AS (
@@ -175,7 +179,7 @@ def transparency_coverage_summary(features: pd.DataFrame) -> pd.DataFrame:
     """Summarize score coverage."""
     rows = []
     total = len(features)
-    for threshold in (7, 8, 9):
+    for threshold in (6, 7, 8):
         count = int((features["observed_components"] >= threshold).sum())
         rows.append({
             "threshold": threshold,

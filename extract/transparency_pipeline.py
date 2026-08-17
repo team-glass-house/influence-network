@@ -16,7 +16,6 @@ from .db import init_db
 from .transparency_index import (
     calculate_index_components,
     get_transparency_index_data,
-    get_website_candidates,
     ingest_transparency_index_source,
     persist_scores,
     write_index_outputs,
@@ -349,229 +348,20 @@ def run_transparency_index(
     workers: int = 1,
     export_parquet: bool = False,
 ) -> TransparencyRun:
-    if max_sites == 0:
-        max_sites = None
-    if max_sites is not None and max_sites < 0:
-        raise ValueError("max_sites cannot be negative")
-    if workers < 1:
-        raise ValueError("workers must be positive")
+    """Refresh the transparency index without collecting website data.
+
+    The website crawler and its arguments remain in the signature so existing
+    callers can transition without breaking, but website observations are no
+    longer part of the index refresh.
+    """
+    if resume_run_id is not None:
+        raise ValueError("Transparency website crawl resumption is no longer supported")
     init_db(db_path)
-    config = config or CrawlConfig()
     output_dir = output_dir or settings.data_dir / "transparency_index"
-
-    resumed = resume_run_id is not None
-    crawl_count = 0
-    reused_count = 0
-    run_id: str
-    urls: pd.DataFrame
-    candidates: pd.DataFrame
-
-    with _connection(db_path) as connection:
-        if resumed:
-            run = (
-                _latest_resumable_run(connection)
-                if resume_run_id == "latest"
-                else _run_row(connection, resume_run_id)
-            )
-            if run["status"] not in RESUMABLE_STATUSES:
-                raise ValueError(
-                    f"Transparency crawl run {run['run_id']} is not resumable "
-                    f"(status={run['status']})"
-                )
-            if (
-                run["crawler_version"] != CRAWLER_VERSION
-                or run["policy_hash"] != config.policy_hash
-            ):
-                raise ValueError(
-                    "Resume configuration does not match the saved crawl policy"
-                )
-            run_id = run["run_id"]
-            crawl_count = int(run["crawled_count"])
-            reused_count = int(run["reused_count"])
-            candidates = _run_candidates(connection, run_id)
-            urls = candidates[["normalized_url", "submitted_url"]].drop_duplicates(
-                "normalized_url"
-            ).sort_values("normalized_url")
-            source = get_transparency_index_data(db_path, run_id=run_id)
-            if source.empty:
-                raise ValueError(
-                    f"Transparency source snapshot not found for run {run_id}"
-                )
-            logger.info(
-                "Resuming transparency crawl %s: %d URLs remain in the snapshot",
-                run_id,
-                len(urls),
-            )
-        else:
-            candidates = get_website_candidates(db_path)
-            urls = candidates[["normalized_url", "submitted_url"]].drop_duplicates(
-                "normalized_url"
-            ).sort_values("normalized_url")
-            if max_sites is not None:
-                urls = urls.head(max_sites)
-            candidates = candidates[
-                candidates["normalized_url"].isin(set(urls["normalized_url"]))
-            ].copy()
-            run_id = _new_run_id()
-            _insert_run(
-                connection,
-                run_id,
-                config,
-                max_sites,
-                len(candidates),
-                len(urls),
-            )
-            _insert_candidates(connection, run_id, candidates)
-            connection.commit()
-            source = ingest_transparency_index_source(run_id, db_path)
-            logger.info(
-                "Started transparency crawl %s: %d unique URLs, %d filing candidates",
-                run_id,
-                len(urls),
-                len(candidates),
-            )
-
-        pending_urls: list[str] = []
-        for row in urls.itertuples(index=False):
-            existing = connection.execute(
-                """
-                SELECT o.*
-                FROM transparency_website_candidates c
-                JOIN transparency_website_observations o
-                  ON o.observation_id = c.observation_id
-                WHERE c.run_id = ? AND c.normalized_url = ?
-                LIMIT 1
-                """,
-                (run_id, row.normalized_url),
-            ).fetchone()
-            if existing is not None:
-                continue
-            cached = existing or _read_cached(connection, row.normalized_url, config)
-            if cached is not None:
-                _link_observation(
-                    connection,
-                    run_id,
-                    row.normalized_url,
-                    int(cached["observation_id"]),
-                )
-                if existing is None:
-                    reused_count += 1
-                _update_run(
-                    connection,
-                    run_id,
-                    crawled_count=crawl_count,
-                    reused_count=reused_count,
-                )
-                connection.commit()
-            elif crawl:
-                pending_urls.append(row.normalized_url)
-
-        if pending_urls:
-            logger.info(
-                "Crawling %d URLs with %d workers",
-                len(pending_urls),
-                workers,
-            )
-            executor = ThreadPoolExecutor(
-                max_workers=workers,
-                thread_name_prefix="transparency-crawl",
-            )
-            futures = {
-                executor.submit(crawler, url, config): url for url in pending_urls
-            }
-            try:
-                for future in as_completed(futures):
-                    url = futures[future]
-                    try:
-                        result = future.result()
-                    except KeyboardInterrupt:
-                        _update_run(
-                            connection,
-                            run_id,
-                            status="interrupted",
-                            crawled_count=crawl_count,
-                            reused_count=reused_count,
-                        )
-                        connection.commit()
-                        for pending in futures:
-                            pending.cancel()
-                        executor.shutdown(wait=False, cancel_futures=True)
-                        raise
-                    except Exception as exc:
-                        _update_run(
-                            connection,
-                            run_id,
-                            status="interrupted",
-                            crawled_count=crawl_count,
-                            reused_count=reused_count,
-                            error=f"{type(exc).__name__}: {exc}",
-                        )
-                        connection.commit()
-                        for pending in futures:
-                            pending.cancel()
-                        executor.shutdown(wait=False, cancel_futures=True)
-                        raise
-                    observation_id = _store_observation(connection, result, config)
-                    _link_observation(connection, run_id, url, observation_id)
-                    crawl_count += 1
-                    _update_run(
-                        connection,
-                        run_id,
-                        crawled_count=crawl_count,
-                        reused_count=reused_count,
-                    )
-                    connection.commit()
-                    if crawl_count == 1 or crawl_count % 25 == 0:
-                        logger.info(
-                            "Transparency crawl %s: %d/%d URLs processed",
-                            run_id,
-                            crawl_count,
-                            len(urls),
-                        )
-            except KeyboardInterrupt:
-                for pending in futures:
-                    pending.cancel()
-                executor.shutdown(wait=False, cancel_futures=True)
-                raise
-            else:
-                executor.shutdown(wait=True)
-
-        pending = connection.execute(
-            """
-            SELECT COUNT(DISTINCT normalized_url)
-            FROM transparency_website_candidates
-            WHERE run_id = ? AND observation_id IS NULL
-            """,
-            (run_id,),
-        ).fetchone()[0]
-        if pending and crawl:
-            _update_run(
-                connection,
-                run_id,
-                crawled_count=crawl_count,
-                reused_count=reused_count,
-            )
-            connection.commit()
-            raise RuntimeError(
-                f"Transparency crawl {run_id} has {pending} unprocessed URLs"
-            )
-
-        website_scores_frame = _website_scores(connection, run_id)
-        scores = calculate_index_components(
-            source,
-            website_scores=website_scores_frame,
-            run_id=run_id,
-        )
-        _mark_selected(connection, run_id, website_scores_frame)
-        _update_run(
-            connection,
-            run_id,
-            status="completed",
-            crawled_count=crawl_count,
-            reused_count=reused_count,
-        )
-        connection.commit()
-
+    run_id = _new_run_id()
+    source = ingest_transparency_index_source(run_id, db_path)
+    logger.info("Refreshing transparency index %s for %d filings", run_id, len(source))
+    scores = calculate_index_components(source, run_id=run_id)
     persist_scores(scores, db_path)
     paths: dict[str, Path] = {}
     if export_parquet or write_s3:
@@ -584,11 +374,11 @@ def run_transparency_index(
     return TransparencyRun(
         run_id=run_id,
         filings=len(source),
-        website_candidates=len(candidates),
-        websites_crawled=crawl_count,
+        website_candidates=0,
+        websites_crawled=0,
         scores_path=paths.get("scores"),
         manifest_path=paths.get("manifest"),
         status="completed",
-        resumed=resumed,
+        resumed=False,
         websites_remaining=0,
     )

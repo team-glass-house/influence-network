@@ -123,46 +123,30 @@ reviewer records an `accepted` decision.
 
 ## Transparency index
 
-The transparency pipeline produces a filing-year score based on the nine-component
-transparency index (`irvin-9-v1`). The board component uses the total
-governing-body count from Form 990 Part I, line 4. Missing volunteer,
-relationship, political-expense, salary, and unrestricted-asset values are
-treated as zero inputs. A filing with no usable website receives a zero-word
-website score; related-site observations are still honored, while a usable
-submitted website without a successful observation stays missing. Ratio
-components still stay missing when their denominator is unavailable, except
-for fundraising when both expense and grant values indicate no activity. Each
-score records its component version.
+The transparency pipeline produces a filing-year score for every non-990-T IRS
+filing using the eight non-website components of the Irvin index
+(`irvin-8-v1`). The board component uses the total governing-body count from
+Form 990 Part I, line 4. Null values produced by a component calculation are
+treated as zero, so every stored score has all eight components, an
+`observed_components` value of 8, and `complete = 1`. The `website` source
+field, `website_words`, and website observation metadata remain in the schema
+for compatibility, but website collection is disabled and `website_words` is
+always null. `normalized_index_score` is retained as a compatibility alias
+for `index_score`; no partial-row normalization is performed.
 The notebook documents the formulas and limitations.
-Website observations are cached in SQLite with the crawl policy, timestamps,
-status, page URLs, and capped word counts.
 
-Run a small crawl first:
+Refresh the full transparency source snapshot and score table:
 
 ```bash
 python -m extract.run transparency-index --db data/irs990_full.db \
-  --max-sites 25 --max-pages 10
+  --export-parquet
 ```
 
-The source snapshot and scores are written to SQLite. Add `--export-parquet`
-to also write the current Parquet representation and JSON manifest. Use
-`--no-crawl` to score only cached observations, or `--max-sites 0` for a full
-crawl. Crawl runs persist their candidate snapshot and commit each URL
-independently, so an interrupted run can be resumed:
-
-```bash
-python -m extract.run transparency-index --db data/irs990_full.db \
-  --max-sites 0 --max-pages 10 --timeout 15 --delay 0.25 --workers 4
-
-python -m extract.run transparency-index --db data/irs990_full.db \
-  --resume
-```
-
-The second command resumes the latest running or interrupted crawl. Pass a
-specific run ID to `--resume` when more than one resumable run exists. Network
-crawls may use a small bounded worker count; SQLite writes remain serialized
-and each completed URL is checkpointed. The score table is also persisted in
-SQLite for downstream modeling. Export a stored SQL run with:
+The source snapshot and scores are written to SQLite, and `--export-parquet`
+also writes the current Parquet representation and JSON manifest. The refresh
+does not crawl websites; legacy crawl arguments are accepted for CLI
+compatibility but have no effect. The score table is persisted in SQLite for
+downstream modeling. Export a stored SQL run with:
 
 ```bash
 python -m extract.run --db data/irs990_full.db \
@@ -185,14 +169,15 @@ python -m extract.run --db data/irs990_full.db reingest-irs990 \
   --root . --path-prefix drive/ --eligible-only --force
 ```
 
-`load_modeling_features()` defaults to complete rows for modeling. Use
-`min_observed_components` when a lower coverage threshold is justified.
+`load_modeling_features()` defaults to complete rows for modeling. Since null
+calculated components are stored as zero, the refreshed rows are complete and
+coverage thresholds are no longer needed for the transparency score itself.
 
 ## End-to-end Transparency Index notebook
 
 `notebooks/transparency_index.ipynb` is the canonical end-to-end workflow. It
-documents the nine components and their limitations, checks complete and
-thresholded populations, explores coverage and score distributions, evaluates
+documents the eight components and their limitations, checks the complete
+population, explores score distributions, evaluates
 a grouped disclosed-activity classifier, summarizes the organization network,
 and reviews clustering and anomaly candidates. It keeps component missingness
 separate from Schedule R relationship prevalence and explains how to use each
