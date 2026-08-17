@@ -225,7 +225,9 @@ data/
 
 # Project: Parquet export (lives on S3, not committed) + scratch
 parquet_export/
+parquet_export_updated/
 .tmp/
+notebooks/network_analysis_walkthrough.md
 
 # Private files
 my_secrets.py
