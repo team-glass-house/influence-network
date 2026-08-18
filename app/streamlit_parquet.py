@@ -166,6 +166,7 @@ page = st.sidebar.radio(
     ["Overview", "Organizations (IRS 990)", "Grant network",
      "Shared-personnel network", "Politically active orgs", "Super PAC spending",
      "Lobbying \u2192 Bills",
+        "what the lobby on",
      "Org \u2192 Policy links",
      "SQL Query Explorer"],
 )
@@ -334,6 +335,69 @@ def page_lobbying() -> None:
                 st.warning("No matching lobbying records.")
             else:
                 st.dataframe(df, use_container_width=True, hide_index=True)
+
+
+def page_figure_three() -> None:
+    st.title("what the lobby on")
+    st.caption(
+        "Lobbying clusters by policy area or bill. Counts are distinct clients "
+        "or LDA filings, so this shows concentration of attention rather than "
+        "causal influence."
+    )
+    dimension = st.radio("Group by", ["Policy area", "Bill"], horizontal=True)
+    measure = st.radio(
+        "Measure", ["Distinct lobbying clients", "Lobbying filings"], horizontal=True
+    )
+    top_n = st.slider("Policy areas or bills to show", 5, 40, 15)
+    count_expression = (
+        "COUNT(DISTINCT client_name)"
+        if measure == "Distinct lobbying clients"
+        else "COUNT(DISTINCT filing_uuid)"
+    )
+    if dimension == "Policy area":
+        df = run_query(f"""
+            SELECT COALESCE(NULLIF(policy_area, ''),
+                            NULLIF(general_issue_code, ''),
+                            'Unclassified') AS topic,
+                   {count_expression} AS count
+            FROM lobbying_bill_facts
+            WHERE bill_id IS NOT NULL
+            GROUP BY topic
+            ORDER BY count DESC
+            LIMIT ?
+        """, (top_n,))
+        axis_label = "Policy area"
+    else:
+        df = run_query(f"""
+            SELECT bill_id || ' - ' || COALESCE(title, '(untitled)') AS topic,
+                   {count_expression} AS count
+            FROM lobbying_bill_facts
+            WHERE bill_id IS NOT NULL
+            GROUP BY bill_id, title
+            ORDER BY count DESC
+            LIMIT ?
+        """, (top_n,))
+        axis_label = "Bill"
+    if df.empty:
+        st.info("No linked lobbying-to-bill records are available for this figure.")
+        return
+    df = df.sort_values("count")
+    fig = px.bar(
+        df,
+        x="count",
+        y="topic",
+        orientation="h",
+        labels={"count": measure, "topic": axis_label},
+        title=f"{measure} by {dimension.lower()}",
+        text="count",
+    )
+    fig.update_traces(textposition="outside")
+    st.plotly_chart(fig, use_container_width=True)
+    st.dataframe(
+        df.sort_values("count", ascending=False),
+        use_container_width=True,
+        hide_index=True,
+    )
 
 
 def page_policy_links() -> None:
@@ -665,6 +729,7 @@ PAGES = {
     "Politically active orgs": page_political,
     "Super PAC spending": page_committees,
     "Lobbying \u2192 Bills": page_lobbying,
+    "what the lobby on": page_figure_three,
     "Org \u2192 Policy links": page_policy_links,
     "SQL Query Explorer": page_query_explorer,
 }
