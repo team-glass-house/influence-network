@@ -15,7 +15,9 @@ Run:
 from __future__ import annotations
 
 import os
+import re
 import sys
+import time
 from pathlib import Path
 
 import duckdb
@@ -164,7 +166,8 @@ page = st.sidebar.radio(
     ["Overview", "Organizations (IRS 990)", "Grant network",
      "Shared-personnel network", "Politically active orgs", "Super PAC spending",
      "Lobbying \u2192 Bills",
-     "Org \u2192 Policy links"],
+     "Org \u2192 Policy links",
+     "SQL Query Explorer"],
 )
 st.sidebar.caption(f"Source: {PARQUET_BASE}")
 
@@ -535,6 +538,125 @@ def page_people_network() -> None:
                  use_container_width=True, hide_index=True)
 
 
+_EXPLORER_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_EXPLORER_READ_ONLY = (
+    "select", "with", "describe", "summarize", "show", "pragma", "explain", "values", "table",
+)
+
+
+@st.cache_data(ttl=600)
+def explorer_tables() -> list[str]:
+    """Discover every Parquet table under PARQUET_BASE, register it as a view, and
+    return the full table list (including the app's materialized/derived views)."""
+    con = get_con()
+    base = PARQUET_BASE.rstrip("/")
+    discovered: list[str] = []
+    if base.startswith("s3://"):
+        found = con.cursor().execute(
+            "SELECT DISTINCT regexp_extract(file, '/([^/]+)/[^/]+$', 1) AS t "
+            f"FROM glob('{base}/*/*.parquet') ORDER BY t"
+        ).df()
+        discovered = [t for t in found["t"] if isinstance(t, str) and _EXPLORER_IDENT.match(t)]
+        for t in discovered:
+            con.execute(
+                f'CREATE OR REPLACE VIEW "{t}" AS '
+                f"SELECT * FROM read_parquet('{base}/{t}/*.parquet', union_by_name=true)"
+            )
+    else:
+        root = Path(base)
+        if root.exists():
+            for folder in sorted(root.iterdir()):
+                if (folder.is_dir() and _EXPLORER_IDENT.match(folder.name)
+                        and next(folder.rglob("*.parquet"), None) is not None):
+                    discovered.append(folder.name)
+                    glob = (folder / "**" / "*.parquet").as_posix()
+                    con.execute(
+                        f'CREATE OR REPLACE VIEW "{folder.name}" AS '
+                        f"SELECT * FROM read_parquet('{glob}', union_by_name=true)"
+                    )
+    existing = con.cursor().execute(
+        "SELECT table_name FROM information_schema.tables ORDER BY 1"
+    ).df()["table_name"].tolist()
+    return sorted(set(discovered) | set(existing))
+
+
+def _explorer_read_only(sql: str) -> tuple[bool, str]:
+    statements = [s for s in sql.strip().split(";") if s.strip()]
+    if not statements:
+        return False, "Enter a query."
+    if len(statements) > 1:
+        return False, "Run one statement at a time (remove extra semicolons)."
+    if not statements[0].lstrip("( \n\t").lower().startswith(_EXPLORER_READ_ONLY):
+        return False, "Only read-only queries are allowed (SELECT, WITH, DESCRIBE, ...)."
+    return True, ""
+
+
+def page_query_explorer() -> None:
+    st.title("SQL Query Explorer")
+    st.caption("Browse the Parquet tables and run read-only SQL against them with DuckDB.")
+    try:
+        tables = explorer_tables()
+    except Exception as exc:  # usually a missing data source or AWS creds for S3
+        st.error(f"Could not list tables from `{PARQUET_BASE}`.\n\n{exc}")
+        return
+    if not tables:
+        st.warning(f"No Parquet tables found under `{PARQUET_BASE}`.")
+        return
+
+    selected = st.sidebar.selectbox("Table", tables, key="explorer_table")
+    if "explorer_sql" not in st.session_state:
+        st.session_state.explorer_sql = f'SELECT *\nFROM "{tables[0]}"\nLIMIT 100'
+    if st.sidebar.button("Load SELECT * into editor", use_container_width=True):
+        st.session_state.explorer_sql = f'SELECT *\nFROM "{selected}"\nLIMIT 100'
+
+    if selected:
+        try:
+            n_rows = scalar(f'SELECT COUNT(*) FROM "{selected}"')
+            st.subheader(f"`{selected}`  ({n_rows:,} rows)")
+        except Exception:
+            st.subheader(f"`{selected}`")
+        schema = (
+            run_query(f'DESCRIBE "{selected}"')[["column_name", "column_type"]]
+            .rename(columns={"column_name": "field", "column_type": "type"})
+        )
+        st.dataframe(schema, use_container_width=True, hide_index=True)
+
+    st.divider()
+    st.subheader("Query editor")
+    st.text_area(
+        "SQL", key="explorer_sql", height=200, label_visibility="collapsed",
+        help="Reference tables by name, e.g. organizations or irs990_filings.",
+    )
+    left, _ = st.columns([1, 3])
+    with left:
+        apply_cap = st.checkbox("Cap rows", value=True, key="explorer_cap")
+        row_cap = st.number_input(
+            "Max rows", min_value=1, max_value=1_000_000, value=1_000, step=100,
+            disabled=not apply_cap, label_visibility="collapsed", key="explorer_cap_rows",
+        )
+        run = st.button("Run query", type="primary", use_container_width=True)
+
+    if run:
+        ok, message = _explorer_read_only(st.session_state.explorer_sql)
+        if not ok:
+            st.warning(message)
+            return
+        statement = st.session_state.explorer_sql.strip().rstrip(";")
+        if apply_cap and statement.lower().lstrip("(").startswith(("select", "with", "table", "values")):
+            statement = f"SELECT * FROM (\n{statement}\n) AS _capped LIMIT {int(row_cap)}"
+        try:
+            started = time.perf_counter()
+            result = run_query(statement)
+            st.success(f"{len(result):,} rows in {time.perf_counter() - started:.2f}s")
+            st.dataframe(result, use_container_width=True)
+            st.download_button(
+                "Download CSV", result.to_csv(index=False).encode("utf-8"),
+                file_name="query_result.csv", mime="text/csv",
+            )
+        except Exception as exc:  # surface the DuckDB error to the user
+            st.error(f"Query failed: {exc}")
+
+
 PAGES = {
     "Overview": page_overview,
     "Organizations (IRS 990)": page_organizations,
@@ -544,5 +666,6 @@ PAGES = {
     "Super PAC spending": page_committees,
     "Lobbying \u2192 Bills": page_lobbying,
     "Org \u2192 Policy links": page_policy_links,
+    "SQL Query Explorer": page_query_explorer,
 }
 PAGES[page]()
