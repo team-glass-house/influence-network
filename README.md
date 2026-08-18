@@ -183,12 +183,31 @@ and reviews clustering and anomaly candidates. It keeps component missingness
 separate from Schedule R relationship prevalence and explains how to use each
 model output.
 
-`notebooks/03_modeling.ipynb` remains as a compatibility copy of the modeling
-workflow; new analysis should use `transparency_index.ipynb`.
+`notebooks/03_modeling.ipynb` is the bounded baseline feature-modeling workflow.
+It generates filing, organization-history, related-transaction, and
+people/compensation features for a reproducible, year-balanced 2023-2024 cohort,
+then runs DBSCAN and Isolation Forest with sensitivity, overlap, OpenSecrets
+label-retrieval, and review summaries. The 344 validated OpenSecrets EIN labels
+are used only as a positive-only external check; they are not complete ground
+truth and are not included in the model features. The notebook keeps the
+transparency index as context rather than a model label and reports year-by-form
+diagnostics so pooled results are not mistaken for year-specific behavior. The
+full two-year population remains visible in the notebook, while the default
+20,000-row cohort keeps the dense DBSCAN workflow practical and reproducible.
+Set `COHORT_SIZE = None` in the notebook configuration to run all complete rows
+on a machine with enough memory and time.
 
 Run it from the repository root with:
 
 ```bash
 python -m jupyter nbconvert --to notebook --execute \
   notebooks/transparency_index.ipynb --output /tmp/transparency_index_executed.ipynb
+```
+
+Run the baseline feature-modeling notebook with:
+
+```bash
+python -m jupyter nbconvert --to notebook --execute \
+  notebooks/03_modeling.ipynb --output /tmp/03_modeling_executed.ipynb \
+  --ExecutePreprocessor.timeout=1200
 ```
