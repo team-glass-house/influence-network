@@ -1,8 +1,8 @@
-"""Parquet + DuckDB variant of the dashboard (SEPARATE test app).
+"""Parquet + DuckDB dashboard.
 
 Reads the Parquet export produced by scripts/db_to_parquet.py via DuckDB
-instead of opening the 11.9 GB SQLite file. The original app
-(app/streamlit_app.py) is left untouched.
+instead of opening the 11.9 GB SQLite file. The previous SQLite dashboard is
+archived at archive/app/streamlit_app.py.
 
 Data source:
     * S3: s3://irs-990-263839540825-us-east-2-an/parquet_updated

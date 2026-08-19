@@ -45,7 +45,7 @@ flowchart TB
     DB --> App
 ```
 
-Run the dashboard with `streamlit run app/streamlit_app.py`.
+Run the dashboard with `streamlit run app/streamlit_parquet.py`.
 ## Setup
 
 ```bash
@@ -115,11 +115,20 @@ name-match candidates, extracts explicit lobbying bill references, and builds
 views for grants, related organizations, approved external links, and
 organization-to-bill facts.
 
-`notebooks/01_build_dataset.ipynb` is the loading workflow and
-`notebooks/02_review_and_explore.ipynb` is the review/analysis workflow. They
-intentionally import reusable Python functions rather than carrying their own
-ETL or matching logic. Cross-source names become analysis joins only after a
-reviewer records an `accepted` decision.
+The notebooks are numbered in workflow order:
+
+1. `notebooks/01_build_dataset.ipynb` - load the source data.
+2. `notebooks/02_review_and_explore.ipynb` - review matches and explore data.
+3. `notebooks/03_dark_money_targets.ipynb` - prepare verified target labels.
+4. `notebooks/04_recover_lda_client_zip_codes.ipynb` - recover LDA ZIP codes.
+5. `notebooks/05_lda_irs_link.ipynb` - link LDA organizations to IRS records.
+6. `notebooks/06_modeling_feature_generation.ipynb` - generate model features.
+7. `notebooks/07_transparency_index.ipynb` - calculate and analyze the index.
+8. `notebooks/08_network_analysis_modeling.ipynb` - run network modeling.
+
+The first two notebooks intentionally import reusable Python functions rather
+than carrying their own ETL or matching logic. Cross-source names become
+analysis joins only after a reviewer records an `accepted` decision.
 
 ## Transparency index
 
@@ -175,7 +184,7 @@ coverage thresholds are no longer needed for the transparency score itself.
 
 ## End-to-end Transparency Index notebook
 
-`notebooks/transparency_index.ipynb` is the canonical end-to-end workflow. It
+`notebooks/07_transparency_index.ipynb` is the canonical end-to-end workflow. It
 documents the eight components and their limitations, checks the complete
 population, explores score distributions, evaluates
 a grouped disclosed-activity classifier, summarizes the organization network,
@@ -183,12 +192,9 @@ and reviews clustering and anomaly candidates. It keeps component missingness
 separate from Schedule R relationship prevalence and explains how to use each
 model output.
 
-`notebooks/03_modeling.ipynb` remains as a compatibility copy of the modeling
-workflow; new analysis should use `transparency_index.ipynb`.
-
 Run it from the repository root with:
 
 ```bash
 python -m jupyter nbconvert --to notebook --execute \
-  notebooks/transparency_index.ipynb --output /tmp/transparency_index_executed.ipynb
+  notebooks/07_transparency_index.ipynb --output /tmp/transparency_index_executed.ipynb
 ```
