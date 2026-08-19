@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -53,7 +54,7 @@ TABLES = [
     "committees", "bills",
     "dash_filings_by_year", "dash_most_lobbied_bills", "dash_political_orgs",
     "lda_filings", "lda_lobbying_activities", "lobbying_bill_links",
-    "entity_observations", "entity_match_candidates", "entity_match_decisions",
+    "organization_policy_links",
 ]
 
 # lobbying_bill_facts uses integer division (//) for the congress calc so DuckDB
@@ -78,102 +79,6 @@ VIEW_SQL: list[tuple[str, str]] = [
           AND bills.congress = CAST((l.filing_year - 1789) // 2 AS INTEGER) + 1
         LEFT JOIN lda_lobbying_activities AS activity
                ON activity.filing_uuid = l.filing_uuid
-    """),
-    ("entity_match_candidate_diagnostics", """
-        WITH latest_decisions AS (
-            SELECT decision.*
-            FROM entity_match_decisions AS decision
-            QUALIFY ROW_NUMBER() OVER (
-                PARTITION BY candidate_id ORDER BY decision_id DESC
-            ) = 1
-        ),
-        irs_name_counts AS (
-            SELECT normalized_name,
-                   COUNT(DISTINCT native_identifier) AS irs_entity_count
-            FROM entity_observations
-            WHERE source_system = 'IRS990'
-            GROUP BY normalized_name
-        ),
-        external_name_counts AS (
-            SELECT source_system, normalized_name,
-                   COUNT(DISTINCT COALESCE(
-                       NULLIF(native_identifier, ''), source_record_id
-                   )) AS external_entity_count
-            FROM entity_observations
-            WHERE source_system IN ('FEC', 'LDA')
-            GROUP BY source_system, normalized_name
-        )
-        SELECT candidate.candidate_id, candidate.matcher_name, candidate.score,
-               candidate.evidence_json, candidate.is_current,
-               left_obs.source_system AS left_source_system,
-               left_obs.source_record_id AS left_source_record_id,
-               left_obs.native_identifier AS left_native_identifier,
-               right_obs.source_system AS right_source_system,
-               right_obs.source_record_id AS right_source_record_id,
-               right_obs.native_identifier AS right_native_identifier,
-               COALESCE(irs_left.irs_entity_count, irs_right.irs_entity_count, 0)
-                   AS irs_entity_count,
-               COALESCE(ext_left.external_entity_count, ext_right.external_entity_count, 0)
-                   AS external_entity_count,
-               CASE
-                   WHEN candidate.is_current = 0 THEN 'retired'
-                   WHEN left_obs.source_system = 'IRS990'
-                    AND right_obs.source_system IN ('FEC', 'LDA')
-                    AND json_extract(candidate.evidence_json, '$.comparison') IS NOT NULL
-                    AND json_extract_string(
-                        candidate.evidence_json, '$.comparison.confidence_tier'
-                    ) IN ('corroborated', 'location_supported')
-                    AND candidate.score >= 0.92
-                    AND COALESCE(irs_left.irs_entity_count, irs_right.irs_entity_count, 0) <= 1
-                    AND COALESCE(ext_left.external_entity_count, ext_right.external_entity_count, 0) <= 1
-                       THEN 'eligible_for_approval'
-                   ELSE 'manual_review'
-               END AS approval_status,
-               latest_decisions.decision AS latest_decision,
-               latest_decisions.reviewer, latest_decisions.rationale,
-               latest_decisions.decided_at
-        FROM entity_match_candidates AS candidate
-        JOIN entity_observations AS left_obs
-          ON left_obs.observation_id = candidate.left_observation_id
-        JOIN entity_observations AS right_obs
-          ON right_obs.observation_id = candidate.right_observation_id
-        LEFT JOIN irs_name_counts AS irs_left
-          ON irs_left.normalized_name = left_obs.normalized_name
-         AND left_obs.source_system = 'IRS990'
-        LEFT JOIN irs_name_counts AS irs_right
-          ON irs_right.normalized_name = right_obs.normalized_name
-         AND right_obs.source_system = 'IRS990'
-        LEFT JOIN external_name_counts AS ext_left
-          ON ext_left.normalized_name = left_obs.normalized_name
-         AND ext_left.source_system = left_obs.source_system
-        LEFT JOIN external_name_counts AS ext_right
-          ON ext_right.normalized_name = right_obs.normalized_name
-         AND ext_right.source_system = right_obs.source_system
-        LEFT JOIN latest_decisions
-          ON latest_decisions.candidate_id = candidate.candidate_id
-    """),
-    ("approved_external_entity_links", """
-        SELECT DISTINCT
-               CASE WHEN left_source_system = 'IRS990'
-                    THEN left_native_identifier ELSE right_native_identifier END AS ein,
-               CASE WHEN left_source_system = 'IRS990'
-                    THEN right_source_system ELSE left_source_system END AS external_source_system,
-               CASE WHEN left_source_system = 'IRS990'
-                    THEN right_source_record_id ELSE left_source_record_id END AS external_source_record_id,
-               candidate_id
-        FROM entity_match_candidate_diagnostics
-        WHERE is_current = 1
-          AND latest_decision = 'accepted'
-          AND approval_status = 'eligible_for_approval'
-    """),
-    ("organization_policy_links", """
-        SELECT DISTINCT links.ein, links.candidate_id, facts.filing_uuid,
-               facts.filing_year, facts.client_name, facts.bill_id, facts.title,
-               facts.policy_area, facts.reported_lobbying_amount
-        FROM approved_external_entity_links AS links
-        JOIN lobbying_bill_facts AS facts
-          ON links.external_source_system = 'LDA'
-         AND links.external_source_record_id = facts.filing_uuid
     """),
 ]
 
@@ -207,6 +112,11 @@ def _resolve_aws_creds() -> tuple[str | None, str | None]:
 @st.cache_resource
 def get_con() -> duckdb.DuckDBPyConnection:
     con = duckdb.connect(database=":memory:")
+    temp_directory = Path(tempfile.gettempdir()) / "duckdb"
+    temp_directory.mkdir(parents=True, exist_ok=True)
+    con.execute("SET memory_limit = '700MB'")
+    con.execute("SET threads = 2")
+    con.execute(f"SET temp_directory = '{temp_directory.as_posix()}'")
     is_s3 = PARQUET_BASE.startswith("s3://")
     if is_s3:
         con.execute("INSTALL httpfs; LOAD httpfs;")
@@ -234,7 +144,10 @@ def get_con() -> duckdb.DuckDBPyConnection:
         except Exception as exc:  # missing export -> skip that table
             print(f"skip {t}: {exc}")
     for name, sql in VIEW_SQL:
-        con.execute(f"CREATE OR REPLACE VIEW {name} AS {sql}")
+        try:
+            con.execute(f"CREATE OR REPLACE VIEW {name} AS {sql}")
+        except Exception as exc:
+            print(f"skip derived view {name}: {exc}")
     return con
 
 
@@ -259,7 +172,6 @@ page = st.sidebar.radio(
     ["Overview", "Organizations (IRS 990)", "Politically active orgs",
      "Grant network", "Shared-personnel network", "Super PAC spending",
      "Lobbying \u2192 Bills",
-        "What they lobby on",
      "Org \u2192 Policy links",
      "SQL Query Explorer"],
 )
@@ -280,7 +192,7 @@ def page_overview() -> None:
         st.subheader("990 filings by tax year")
         df = run_query("SELECT tax_year, filings FROM dash_filings_by_year ORDER BY tax_year")
         if not df.empty:
-            st.plotly_chart(px.bar(df, x="tax_year", y="filings"), use_container_width=True)
+            st.plotly_chart(px.bar(df, x="tax_year", y="filings"), width="stretch")
     with right:
         st.subheader("Most-lobbied bills")
         df = run_query(
@@ -289,7 +201,7 @@ def page_overview() -> None:
         if not df.empty:
             st.plotly_chart(
                 px.bar(df.sort_values("lobbying_filings"), x="lobbying_filings",
-                       y="bill_id", orientation="h"), use_container_width=True)
+                       y="bill_id", orientation="h"), width="stretch")
 
 
 def page_organizations() -> None:
@@ -318,7 +230,7 @@ def page_organizations() -> None:
         st.warning("No organizations found.")
         return
     st.caption(f"{len(orgs)} matching organizations (top 100 by revenue)")
-    st.dataframe(orgs, use_container_width=True, hide_index=True)
+    st.dataframe(orgs, width="stretch", hide_index=True)
 
     ein = st.selectbox("Inspect an EIN", orgs["ein"].tolist(),
                        format_func=lambda e: f"{e} — {orgs.loc[orgs.ein == e, 'filer_name'].iloc[0]}")
@@ -350,7 +262,7 @@ def page_organizations() -> None:
             "No filer mailing addresses are populated in the loaded IRS 990 filings. "
             "Re-ingest the source XML with the current parser to backfill them."
         )
-    st.dataframe(filings, use_container_width=True, hide_index=True)
+    st.dataframe(filings, width="stretch", hide_index=True)
     col1, col2 = st.columns(2)
     with col1:
         st.subheader("Grants paid (Schedule I)")
@@ -358,7 +270,7 @@ def page_organizations() -> None:
             SELECT tax_year, grantee_name, grantee_ein, amount
             FROM org_grants
             WHERE grantor_ein = ? ORDER BY amount DESC LIMIT 200
-        """, (ein,)), use_container_width=True, hide_index=True)
+        """, (ein,)), width="stretch", hide_index=True)
     with col2:
         st.subheader("Lobbying linked to this org")
         links = run_query("""
@@ -369,7 +281,7 @@ def page_organizations() -> None:
         if links.empty:
             st.caption("No approved lobbying links for this org.")
         else:
-            st.dataframe(links, use_container_width=True, hide_index=True)
+            st.dataframe(links, width="stretch", hide_index=True)
 
 
 def page_committees() -> None:
@@ -387,8 +299,8 @@ def page_committees() -> None:
             px.bar(df.head(20).sort_values("total_disbursements"),
                    x="total_disbursements", y="name", orientation="h",
                    labels={"total_disbursements": "Total disbursements ($)", "name": ""}),
-            use_container_width=True)
-    st.dataframe(df, use_container_width=True, hide_index=True)
+            width="stretch")
+    st.dataframe(df, width="stretch", hide_index=True)
 
 
 def page_political() -> None:
@@ -410,8 +322,8 @@ def page_political() -> None:
         px.bar(df.head(20).sort_values("lobbying_spend"),
                x="lobbying_spend", y="filer_name", orientation="h",
                labels={"lobbying_spend": "Reported lobbying spend ($)", "filer_name": ""}),
-        use_container_width=True)
-    st.dataframe(df, use_container_width=True, hide_index=True)
+        width="stretch")
+    st.dataframe(df, width="stretch", hide_index=True)
 
 
 def page_lobbying() -> None:
@@ -421,7 +333,7 @@ def page_lobbying() -> None:
         st.dataframe(run_query("""
             SELECT bill_id, title, policy_area, lobbying_filings, distinct_clients
             FROM dash_most_lobbied_bills ORDER BY lobbying_filings DESC LIMIT 200
-        """), use_container_width=True, hide_index=True)
+        """), width="stretch", hide_index=True)
     with tab2:
         client = st.text_input("Client name contains", "")
         if client:
@@ -435,70 +347,7 @@ def page_lobbying() -> None:
             if df.empty:
                 st.warning("No matching lobbying records.")
             else:
-                st.dataframe(df, use_container_width=True, hide_index=True)
-
-
-def page_figure_three() -> None:
-    st.title("what the lobby on")
-    st.caption(
-        "Lobbying clusters by policy area or bill. Counts are distinct clients "
-        "or LDA filings, so this shows concentration of attention rather than "
-        "causal influence."
-    )
-    dimension = st.radio("Group by", ["Policy area", "Bill"], horizontal=True)
-    measure = st.radio(
-        "Measure", ["Distinct lobbying clients", "Lobbying filings"], horizontal=True
-    )
-    top_n = st.slider("Policy areas or bills to show", 5, 40, 15)
-    count_expression = (
-        "COUNT(DISTINCT client_name)"
-        if measure == "Distinct lobbying clients"
-        else "COUNT(DISTINCT filing_uuid)"
-    )
-    if dimension == "Policy area":
-        df = run_query(f"""
-            SELECT COALESCE(NULLIF(policy_area, ''),
-                            NULLIF(general_issue_code, ''),
-                            'Unclassified') AS topic,
-                   {count_expression} AS count
-            FROM lobbying_bill_facts
-            WHERE bill_id IS NOT NULL
-            GROUP BY topic
-            ORDER BY count DESC
-            LIMIT ?
-        """, (top_n,))
-        axis_label = "Policy area"
-    else:
-        df = run_query(f"""
-            SELECT bill_id || ' - ' || COALESCE(title, '(untitled)') AS topic,
-                   {count_expression} AS count
-            FROM lobbying_bill_facts
-            WHERE bill_id IS NOT NULL
-            GROUP BY bill_id, title
-            ORDER BY count DESC
-            LIMIT ?
-        """, (top_n,))
-        axis_label = "Bill"
-    if df.empty:
-        st.info("No linked lobbying-to-bill records are available for this figure.")
-        return
-    df = df.sort_values("count")
-    fig = px.bar(
-        df,
-        x="count",
-        y="topic",
-        orientation="h",
-        labels={"count": measure, "topic": axis_label},
-        title=f"{measure} by {dimension.lower()}",
-        text="count",
-    )
-    fig.update_traces(textposition="outside")
-    st.plotly_chart(fig, use_container_width=True)
-    st.dataframe(
-        df.sort_values("count", ascending=False),
-        use_container_width=True,
-        hide_index=True,
-    )
+                st.dataframe(df, width="stretch", hide_index=True)
 
 
 def page_policy_links() -> None:
@@ -526,7 +375,7 @@ def page_policy_links() -> None:
         st.warning("No approved policy links for that search.")
         return
     st.caption(f"{len(df)} links")
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    st.dataframe(df, width="stretch", hide_index=True)
 
 
 def page_network() -> None:
@@ -601,13 +450,13 @@ def page_network() -> None:
     fig = go.Figure(edge_traces + [node_trace])
     fig.update_layout(height=650, margin=dict(l=0, r=0, t=0, b=0),
                       xaxis=dict(visible=False), yaxis=dict(visible=False))
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     disp = edges.copy()
     disp["grantor"] = disp["source_ein"].map(names).fillna(disp["source_ein"])
     disp["grantee"] = disp["target_ein"].map(names).fillna(disp["target_ein"])
     st.dataframe(disp[["grantor", "grantee", "amount"]].sort_values("amount", ascending=False),
-                 use_container_width=True, hide_index=True)
+                 width="stretch", hide_index=True)
 
 
 def page_people_network() -> None:
@@ -693,12 +542,12 @@ def page_people_network() -> None:
     fig = go.Figure([edge_trace, node_trace])
     fig.update_layout(height=650, margin=dict(l=0, r=0, t=0, b=0),
                       xaxis=dict(visible=False), yaxis=dict(visible=False))
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
     rows = [{"organization": rec["name"], "ein": ein,
              "shared_people": ", ".join(sorted(rec["people"])), "count": len(rec["people"])}
             for ein, rec in connections.items()]
     st.dataframe(pd.DataFrame(rows).sort_values("count", ascending=False),
-                 use_container_width=True, hide_index=True)
+                 width="stretch", hide_index=True)
 
 
 _EXPLORER_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -769,7 +618,7 @@ def page_query_explorer() -> None:
     selected = st.sidebar.selectbox("Table", tables, key="explorer_table")
     if "explorer_sql" not in st.session_state:
         st.session_state.explorer_sql = f'SELECT *\nFROM "{tables[0]}"\nLIMIT 100'
-    if st.sidebar.button("Load SELECT * into editor", use_container_width=True):
+    if st.sidebar.button("Load SELECT * into editor", width="stretch"):
         st.session_state.explorer_sql = f'SELECT *\nFROM "{selected}"\nLIMIT 100'
 
     if selected:
@@ -782,7 +631,7 @@ def page_query_explorer() -> None:
             run_query(f'DESCRIBE "{selected}"')[["column_name", "column_type"]]
             .rename(columns={"column_name": "field", "column_type": "type"})
         )
-        st.dataframe(schema, use_container_width=True, hide_index=True)
+        st.dataframe(schema, width="stretch", hide_index=True)
 
     st.divider()
     st.subheader("Query editor")
@@ -797,7 +646,7 @@ def page_query_explorer() -> None:
             "Max rows", min_value=1, max_value=1_000_000, value=1_000, step=100,
             disabled=not apply_cap, label_visibility="collapsed", key="explorer_cap_rows",
         )
-        run = st.button("Run query", type="primary", use_container_width=True)
+        run = st.button("Run query", type="primary", width="stretch")
 
     if run:
         ok, message = _explorer_read_only(st.session_state.explorer_sql)
@@ -811,7 +660,7 @@ def page_query_explorer() -> None:
             started = time.perf_counter()
             result = run_query(statement)
             st.success(f"{len(result):,} rows in {time.perf_counter() - started:.2f}s")
-            st.dataframe(result, use_container_width=True)
+            st.dataframe(result, width="stretch")
             st.download_button(
                 "Download CSV", result.to_csv(index=False).encode("utf-8"),
                 file_name="query_result.csv", mime="text/csv",
@@ -828,7 +677,6 @@ PAGES = {
     "Politically active orgs": page_political,
     "Super PAC spending": page_committees,
     "Lobbying \u2192 Bills": page_lobbying,
-    "What they lobby on": page_figure_three,
     "Org \u2192 Policy links": page_policy_links,
     "SQL Query Explorer": page_query_explorer,
 }
