@@ -256,10 +256,10 @@ st.sidebar.title("Influence Network")
 st.sidebar.caption("Parquet + DuckDB build (test)")
 page = st.sidebar.radio(
     "View",
-    ["Overview", "Organizations (IRS 990)", "Grant network",
-     "Shared-personnel network", "Politically active orgs", "Super PAC spending",
+    ["Overview", "Organizations (IRS 990)", "Politically active orgs",
+     "Grant network", "Shared-personnel network", "Super PAC spending",
      "Lobbying \u2192 Bills",
-        "what the lobby on",
+        "What they lobby on",
      "Org \u2192 Policy links",
      "SQL Query Explorer"],
 )
@@ -828,7 +828,7 @@ PAGES = {
     "Politically active orgs": page_political,
     "Super PAC spending": page_committees,
     "Lobbying \u2192 Bills": page_lobbying,
-    "what the lobby on": page_figure_three,
+    "What they lobby on": page_figure_three,
     "Org \u2192 Policy links": page_policy_links,
     "SQL Query Explorer": page_query_explorer,
 }
